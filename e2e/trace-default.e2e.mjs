@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { defaultTimeoutMs, formatFailure, multiTurnToolPrompts, repoRoot, runPiTraceE2E } from "./helpers/pi-runner.mjs";
 
 const assetDir = join(repoRoot, "dev_assets");
@@ -57,7 +57,8 @@ test(
     assert.equal(markdownFiles.length, 1, `expected one markdown file under ${markdownDir}, got ${markdownFiles.join(", ")}`);
 
     const markdown = readFileSync(markdownFiles[0], "utf8");
-    assert.match(markdown, /^# Pi Trace/m, markdown);
+    assert.match(basename(markdownFiles[0]), /^\d{8}_.+\.md$/);
+    assert.match(markdown, /^# \d{8} .+/m, markdown);
     assert.match(markdown, /^## User/m, markdown);
     assert.match(markdown, /^## Assistant/m, markdown);
     assert.match(markdown, /^## Tool Call: bash \(success\)$/m, markdown);

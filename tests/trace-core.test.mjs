@@ -180,9 +180,9 @@ test("MarkdownTraceConsumer writes batch records as a markdown execution documen
       },
     });
 
-    const markdownPath = join(dir, "1970-01", "trace.md");
+    const markdownPath = join(dir, "1970-01", "19700101_Run_echo.md");
     const markdown = readFileSync(markdownPath, "utf8");
-    assert.match(markdown, /^# Pi Trace/m);
+    assert.match(markdown, /^# 19700101 Run echo/m);
     assert.match(markdown, /^## User/m);
     assert.match(markdown, /Run echo/);
     assert.match(markdown, /^## Thinking/m);
@@ -466,6 +466,7 @@ test("LarkTraceConsumer generates XML and calls lark-cli with correct arguments"
   assert.ok(createCall.args.includes("test-space-123"));
   assert.ok(createCall.args.includes("--parent-node-token"));
   assert.ok(createCall.args.includes("month-node-123"));
+  assert.equal(createCall.args[createCall.args.indexOf("--title") + 1], "19700101 test-session");
 
   // Third call: append callout
   const calloutCall = calls[2];

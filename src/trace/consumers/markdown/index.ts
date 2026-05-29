@@ -3,6 +3,7 @@ import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { updateSessionAssetMap } from "../../assets/session-asset-map.js";
 import type { TraceConsumer, TraceEvent } from "../../core/types.js";
 import { safeJson } from "../../core/utils.js";
+import { buildTraceTitle, deriveTraceTitleSubject, formatTraceMonth, sanitizeTraceFileName } from "../title.js";
 
 export interface MarkdownTraceConsumerOptions {
   outputDir: string;
@@ -22,12 +23,15 @@ export class MarkdownTraceConsumer implements TraceConsumer {
   private hasUser = false;
   private outputPathFinalized = false;
   private sessionId: string | undefined;
+  private timestamp = Date.now();
 
   constructor(options: MarkdownTraceConsumerOptions) {
+    const now = Date.now();
     this.outputDir = options.outputDir;
-    this.currentOutputDir = join(options.outputDir, formatTraceMonth(Date.now()));
+    this.currentOutputDir = join(options.outputDir, formatTraceMonth(now));
     this.assetMapPath = options.assetMapPath;
-    this.outputPath = join(this.currentOutputDir, "trace.md");
+    const title = buildTraceTitle(now);
+    this.outputPath = join(this.currentOutputDir, `${sanitizeTraceFileName(title)}.md`);
   }
 
   consume(event: TraceEvent): void {
@@ -54,33 +58,21 @@ export class MarkdownTraceConsumer implements TraceConsumer {
 
     const sessionId = event.payload.sessionId as string | undefined;
     this.sessionId = sessionId;
+    this.timestamp = event.timestamp;
     this.currentOutputDir = join(this.outputDir, formatTraceMonth(event.timestamp));
-    this.outputPath = join(this.currentOutputDir, "trace.md");
+    const titleSubject = deriveTraceTitleSubject(event.payload);
+    const title = buildTraceTitle(event.timestamp, titleSubject);
+    this.outputPath = join(this.currentOutputDir, `${sanitizeTraceFileName(title)}.md`);
     const sessionName = event.payload.sessionName as string | undefined;
-    const input = event.payload.input as string | undefined;
     const modelId = event.payload.modelId as string | undefined;
     const modelProvider = event.payload.modelProvider as string | undefined;
     const cwd = event.payload.cwd as string | undefined;
-
-    // Prefer sessionName, then input's first line; sessionId is NOT used as a
-    // fallback here because `input` only arrives later with `agent.run`.
-    let namePart: string | null = null;
-    if (sessionName && sessionName.trim()) {
-      namePart = sessionName.trim().replace(/[^a-zA-Z0-9_\-\u4e00-\u9fa5]/g, "_");
-    } else if (input && input.trim()) {
-      const firstLine = input.trim().split("\n")[0].trim();
-      namePart = firstLine.replace(/[^a-zA-Z0-9_\-\u4e00-\u9fa5]/g, "_").slice(0, 100) || null;
-    }
-
-    if (namePart) {
-      this.outputPath = join(this.currentOutputDir, `${namePart}.md`);
-      this.outputPathFinalized = true;
-    }
+    this.outputPathFinalized = Boolean(titleSubject);
     updateSessionAssetMap(this.assetMapPath, sessionId, {
       markdown: { path: this.outputPath },
     });
 
-    this.sections.push("# Pi Trace", "");
+    this.sections.push(`# ${title}`, "");
 
     const metaLines: string[] = [];
     metaLines.push(`> **Run ID:** \`${event.runId ?? "unknown"}\``);
@@ -155,17 +147,16 @@ export class MarkdownTraceConsumer implements TraceConsumer {
     const input = typeof payload.input === "string" ? payload.input : undefined;
 
     // If we never locked a meaningful filename, try to derive one from input now.
-    if (!this.outputPathFinalized && input && input.trim()) {
-      const firstLine = input.trim().split("\n")[0].trim();
-      const namePart = firstLine.replace(/[^a-zA-Z0-9_\-\u4e00-\u9fa5]/g, "_").slice(0, 100);
-      if (namePart) {
+    if (!this.outputPathFinalized) {
+      const titleSubject = deriveTraceTitleSubject(payload);
+      if (titleSubject) {
+        const title = buildTraceTitle(this.timestamp, titleSubject);
         const oldPath = this.outputPath;
-        const newPath = join(this.currentOutputDir, `${namePart}.md`);
+        const newPath = join(this.currentOutputDir, `${sanitizeTraceFileName(title)}.md`);
+        this.sections[0] = `# ${title}`;
         if (newPath !== oldPath) {
-          // Rename the already-flushed file so we don't leave a stale trace.md
           try { renameSync(oldPath, newPath); } catch { /* file may not exist yet */ }
           this.outputPath = newPath;
-          // Update the asset map to point at the new path
           updateSessionAssetMap(this.assetMapPath, this.sessionId, {
             markdown: { path: this.outputPath },
           });
@@ -185,14 +176,6 @@ export class MarkdownTraceConsumer implements TraceConsumer {
     mkdirSync(this.currentOutputDir, { recursive: true });
     writeFileSync(this.outputPath, `${this.sections.join("\n").trimEnd()}\n`, "utf8");
   }
-}
-
-function formatTraceMonth(timestamp: number): string {
-  const date = new Date(timestamp);
-  if (Number.isNaN(date.getTime())) return "unknown-month";
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  return `${year}-${month}`;
 }
 
 function isThinkingBlock(block: unknown): boolean {

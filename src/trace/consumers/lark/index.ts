@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { updateSessionAssetMap } from "../../assets/session-asset-map.js";
 import type { TraceConsumer, TraceEvent } from "../../core/types.js";
 import { safeJson } from "../../core/utils.js";
+import { buildTraceTitle, deriveTraceTitleSubject, formatTraceMonth } from "../title.js";
 
 export interface LarkTraceConsumerOptions {
   wikiSpaceId: string;
@@ -23,6 +24,8 @@ export class LarkTraceConsumer implements TraceConsumer {
   private documentUrl?: string;
   private monthTitle?: string;
   private monthNodeToken?: string;
+  private timestamp = Date.now();
+  private titleSubject?: string;
 
   // Metadata captured from the first event
   private runId = "unknown";
@@ -75,6 +78,7 @@ export class LarkTraceConsumer implements TraceConsumer {
 
     const p = event.payload;
     this.runId = String(event.runId ?? p.runId ?? "unknown");
+    this.timestamp = event.timestamp;
     this.monthTitle = formatTraceMonth(event.timestamp);
     this.sessionName = p.sessionName as string | undefined;
     this.sessionId = p.sessionId as string | undefined;
@@ -82,6 +86,7 @@ export class LarkTraceConsumer implements TraceConsumer {
     this.modelProvider = p.modelProvider as string | undefined;
     this.cwd = p.cwd as string | undefined;
     this.input = typeof p.userInput === "string" ? p.userInput : undefined;
+    this.titleSubject = deriveTraceTitleSubject(p);
   }
 
   // --------------------------------------------------------------------------
@@ -97,6 +102,7 @@ export class LarkTraceConsumer implements TraceConsumer {
 
     if (role === "user") {
       this.hasUserMessage = true;
+      this.titleSubject ??= deriveTraceTitleSubject(payload);
       this.pendingSections.push(`<h2>User</h2>`, contentToXml(content));
       return;
     }
@@ -149,6 +155,7 @@ export class LarkTraceConsumer implements TraceConsumer {
   }
 
   private async handleAgentRun(payload: Record<string, unknown>): Promise<void> {
+    this.titleSubject ??= deriveTraceTitleSubject(payload);
     // If no user message was captured, add input from run payload
     if (!this.hasUserMessage && typeof payload.userInput === "string" && (payload.userInput as string).trim()) {
       this.pendingSections.push(`<h2>User</h2>`, contentToXml(payload.userInput as string));
@@ -269,17 +276,7 @@ export class LarkTraceConsumer implements TraceConsumer {
   // --------------------------------------------------------------------------
 
   private deriveTitle(): string {
-    if (this.sessionName?.trim()) {
-      return `Pi Trace — ${this.sessionName.trim()}`;
-    }
-    if (this.input?.trim()) {
-      const firstLine = this.input.trim().split("\n")[0].trim().slice(0, 100);
-      return `Pi Trace — ${firstLine}`;
-    }
-    if (this.sessionId) {
-      return `Pi Trace — ${this.sessionId}`;
-    }
-    return "Pi Trace";
+    return buildTraceTitle(this.timestamp, this.titleSubject);
   }
 
   // --------------------------------------------------------------------------
@@ -483,14 +480,6 @@ function packSectionsIntoChunks(sections: string[], maxChars: number): string[] 
 
   if (current) chunks.push(current);
   return chunks;
-}
-
-function formatTraceMonth(timestamp: number): string {
-  const date = new Date(timestamp);
-  if (Number.isNaN(date.getTime())) return "unknown-month";
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  return `${year}-${month}`;
 }
 
 function parseWikiNode(stdout: string): { title?: string; nodeToken?: string; objToken?: string; url?: string } {

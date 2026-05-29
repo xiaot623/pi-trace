@@ -1,4 +1,4 @@
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { mkdirSync, writeFileSync } from "node:fs";
 import type { TraceConsumer, TraceEvent } from "../../core/types.js";
 import { safeJson } from "../../core/utils.js";
@@ -11,7 +11,7 @@ export class MarkdownTraceConsumer implements TraceConsumer {
   readonly name = "markdown";
   readonly filter = { kinds: ["batch" as const] };
 
-  private readonly outputPath: string;
+  private outputPath: string;
   private readonly sections: string[] = [];
   private initialized = false;
   private hasUser = false;
@@ -41,7 +41,41 @@ export class MarkdownTraceConsumer implements TraceConsumer {
   private ensureInitialized(event: TraceEvent): void {
     if (this.initialized) return;
     this.initialized = true;
-    this.sections.push("# Pi Trace", "", `Run ID: \`${event.runId ?? "unknown"}\``, "");
+
+    const sessionId = event.payload.sessionId as string | undefined;
+    const sessionName = event.payload.sessionName as string | undefined;
+    const modelId = event.payload.modelId as string | undefined;
+    const modelProvider = event.payload.modelProvider as string | undefined;
+    const cwd = event.payload.cwd as string | undefined;
+
+    if (sessionId) {
+      const sanitizedSessionName = sessionName
+        ? sessionName.trim().replace(/[^a-zA-Z0-9_-]/g, "_")
+        : undefined;
+      const namePart = sanitizedSessionName ? `${sanitizedSessionName}_${sessionId}` : sessionId;
+      const dir = dirname(this.outputPath);
+      this.outputPath = join(dir, `${namePart}.md`);
+    }
+
+    this.sections.push("# Pi Trace", "");
+
+    const metaLines: string[] = [];
+    metaLines.push(`> **Run ID:** \`${event.runId ?? "unknown"}\``);
+    if (sessionName) {
+      metaLines.push(`> **Session Name:** \`${sessionName}\``);
+    }
+    if (sessionId) {
+      metaLines.push(`> **Session ID:** \`${sessionId}\``);
+    }
+    if (modelId) {
+      const rawModel = modelProvider ? `${modelProvider}/${modelId}` : modelId;
+      metaLines.push(`> **Model:** \`${rawModel}\``);
+    }
+    if (cwd) {
+      metaLines.push(`> **Workspace:** \`${cwd}\``);
+    }
+
+    this.sections.push(...metaLines, "");
   }
 
   private renderMessage(payload: Record<string, unknown>): void {

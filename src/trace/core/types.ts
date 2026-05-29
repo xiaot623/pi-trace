@@ -53,4 +53,10 @@ export interface CurrentAgentRun {
   pendingTools: Map<string, PendingToolRecord>;
   turnStartedAt: Map<number, number>;
   eventIds: string[];
+  sessionId?: string;
+  sessionName?: string;
+  modelId?: string;
+  modelName?: string;
+  modelProvider?: string;
+  cwd?: string;
 }

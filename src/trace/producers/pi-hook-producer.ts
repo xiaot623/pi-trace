@@ -26,7 +26,7 @@ export class TraceProducer {
   register(pi: ExtensionAPI): void {
     pi.on("input", (event) => this.handleInput(event));
     pi.on("before_agent_start", (event) => this.handleBeforeAgentStart(event));
-    pi.on("agent_start", (event) => this.handleAgentStart(event));
+    pi.on("agent_start", (event, ctx) => this.handleAgentStart(event, ctx, pi));
     pi.on("agent_end", (event) => this.handleAgentEnd(event));
     pi.on("turn_start", (event) => this.handleTurnStart(event));
     pi.on("turn_end", (event) => this.handleTurnEnd(event));
@@ -47,9 +47,16 @@ export class TraceProducer {
     if (typeof event?.prompt === "string") this.lastInput = event.prompt;
   }
 
-  handleAgentStart(_event: any): void {
+  handleAgentStart(_event: any, ctx?: any, pi?: any): void {
     this.sequence = 0;
     const runId = this.runIdFactory();
+    const sessionId = ctx?.sessionManager?.sessionId;
+    const sessionName = typeof pi?.getSessionName === "function" ? pi.getSessionName() : undefined;
+    const modelId = ctx?.model?.id;
+    const modelName = ctx?.model?.name;
+    const modelProvider = ctx?.model?.provider;
+    const cwd = ctx?.cwd;
+
     this.run = {
       runId,
       input: this.lastInput,
@@ -61,6 +68,12 @@ export class TraceProducer {
       pendingTools: new Map<string, PendingToolRecord>(),
       turnStartedAt: new Map<number, number>(),
       eventIds: [],
+      sessionId,
+      sessionName,
+      modelId,
+      modelName,
+      modelProvider,
+      cwd,
     };
   }
 
@@ -223,7 +236,15 @@ export class TraceProducer {
       type,
       timestamp: this.now(),
       runId: run.runId,
-      payload,
+      payload: {
+        ...payload,
+        ...(run.sessionId ? { sessionId: run.sessionId } : {}),
+        ...(run.sessionName ? { sessionName: run.sessionName } : {}),
+        ...(run.modelId ? { modelId: run.modelId } : {}),
+        ...(run.modelName ? { modelName: run.modelName } : {}),
+        ...(run.modelProvider ? { modelProvider: run.modelProvider } : {}),
+        ...(run.cwd ? { cwd: run.cwd } : {}),
+      },
     };
     if (kind === "batch" && options.recordBatchId !== false) run.eventIds.push(event.id);
     this.core.publish(event);

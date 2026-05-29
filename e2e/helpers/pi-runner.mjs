@@ -14,12 +14,27 @@ export const toolPrompt = [
   "然后用一句话结束。",
 ].join("\n");
 
+export const multiTurnToolPrompts = [
+  [
+    "这是 pi-trace 的端到端多轮测试第一轮。",
+    "请只做一件事：调用 bash 工具执行 `echo trace-turn-0`。",
+    "然后用一句话结束。",
+  ].join("\n"),
+  [
+    "这是 pi-trace 的端到端多轮测试第二轮。",
+    "请只做一件事：调用 bash 工具执行 `echo trace-turn-1`。",
+    "然后用一句话结束。",
+  ].join("\n"),
+];
+
 export function runPiTraceE2E({
   model = defaultModel,
   timeoutMs = defaultTimeoutMs,
   prompt = toolPrompt,
+  prompts,
   env = {},
 } = {}) {
+  const messages = prompts ?? [prompt];
   return runPi(
     [
       "--no-extensions",
@@ -29,7 +44,7 @@ export function runPiTraceE2E({
       "--model",
       model,
       "-p",
-      prompt,
+      ...messages,
     ],
     { timeoutMs, env },
   );

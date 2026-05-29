@@ -1,9 +1,11 @@
 import { spawnSync } from "node:child_process";
+import { updateSessionAssetMap } from "../../assets/session-asset-map.js";
 import type { TraceConsumer, TraceEvent } from "../../core/types.js";
 import { safeJson } from "../../core/utils.js";
 
 export interface LarkTraceConsumerOptions {
   wikiSpaceId: string;
+  assetMapPath?: string;
 }
 
 /** Max chars per single lark-cli --content call. */
@@ -16,8 +18,11 @@ export class LarkTraceConsumer implements TraceConsumer {
   readonly filter = { kinds: ["batch" as const] };
 
   private readonly wikiSpaceId: string;
+  private readonly assetMapPath?: string;
   private documentToken?: string;
   private documentUrl?: string;
+  private monthTitle?: string;
+  private monthNodeToken?: string;
 
   // Metadata captured from the first event
   private runId = "unknown";
@@ -36,6 +41,7 @@ export class LarkTraceConsumer implements TraceConsumer {
 
   constructor(options: LarkTraceConsumerOptions) {
     this.wikiSpaceId = options.wikiSpaceId;
+    this.assetMapPath = options.assetMapPath;
   }
 
   // --------------------------------------------------------------------------
@@ -69,6 +75,7 @@ export class LarkTraceConsumer implements TraceConsumer {
 
     const p = event.payload;
     this.runId = String(event.runId ?? p.runId ?? "unknown");
+    this.monthTitle = formatTraceMonth(event.timestamp);
     this.sessionName = p.sessionName as string | undefined;
     this.sessionId = p.sessionId as string | undefined;
     this.modelId = p.modelId as string | undefined;
@@ -167,9 +174,11 @@ export class LarkTraceConsumer implements TraceConsumer {
       if (!this.documentToken) {
         // First flush: create wiki node, then append content
         const title = this.deriveTitle();
+        const monthNodeToken = this.resolveMonthNodeToken();
         const nodeResult = this.execLarkCli([
           "wiki", "+node-create",
           "--space-id", this.wikiSpaceId,
+          "--parent-node-token", monthNodeToken,
           "--title", title,
           "--obj-type", "docx",
         ], "");
@@ -216,6 +225,43 @@ export class LarkTraceConsumer implements TraceConsumer {
   private buildCreateXml(turnSections: string[]): string {
     const callout = this.buildCalloutXml();
     return [callout, ...turnSections].join("\n");
+  }
+
+  private resolveMonthNodeToken(): string {
+    if (this.monthNodeToken) return this.monthNodeToken;
+
+    const title = this.monthTitle ?? formatTraceMonth(Date.now());
+    const existing = this.findWikiNodeByTitle(title);
+    if (existing?.nodeToken) {
+      this.monthNodeToken = existing.nodeToken;
+      return existing.nodeToken;
+    }
+
+    const stdout = this.execLarkCli([
+      "wiki", "+node-create",
+      "--space-id", this.wikiSpaceId,
+      "--title", title,
+      "--obj-type", "docx",
+    ], "");
+    const created = parseWikiNode(stdout);
+    if (!created.nodeToken) {
+      throw new Error(`lark-cli did not return node_token for month document ${title}`);
+    }
+    this.monthNodeToken = created.nodeToken;
+    console.error(`[trace:lark] created month wiki node ${title} ${created.nodeToken}`);
+    return created.nodeToken;
+  }
+
+  private findWikiNodeByTitle(title: string): { nodeToken?: string; objToken?: string; url?: string } | undefined {
+    const stdout = this.execLarkCli([
+      "wiki", "+node-list",
+      "--space-id", this.wikiSpaceId,
+      "--page-all",
+      "--page-limit", "0",
+      "--format", "json",
+    ], "");
+    const nodes = parseWikiNodes(stdout);
+    return nodes.find((node) => node.title === title);
   }
 
   // --------------------------------------------------------------------------
@@ -295,6 +341,7 @@ export class LarkTraceConsumer implements TraceConsumer {
       if (objToken) {
         this.documentToken = String(objToken);
         this.documentUrl = url;
+        this.updateAssetMap();
         console.error(`[trace:lark] created wiki node ${this.documentToken}`);
         return;
       }
@@ -303,6 +350,7 @@ export class LarkTraceConsumer implements TraceConsumer {
       if (docId) {
         this.documentToken = String(docId);
         this.documentUrl = json?.data?.document?.url;
+        this.updateAssetMap();
         console.error(`[trace:lark] created document ${this.documentToken}`);
       } else {
         console.error(`[trace:lark] no obj_token or document_id in response:`, stdout.slice(0, 200));
@@ -310,6 +358,19 @@ export class LarkTraceConsumer implements TraceConsumer {
     } catch {
       console.error(`[trace:lark] failed to parse create response:`, stdout.slice(0, 200));
     }
+  }
+
+  private updateAssetMap(): void {
+    if (!this.documentToken) return;
+    updateSessionAssetMap(this.assetMapPath, this.sessionId, {
+      lark: {
+        documentToken: this.documentToken,
+        ...(this.documentUrl ? { documentUrl: this.documentUrl } : {}),
+        wikiSpaceId: this.wikiSpaceId,
+        ...(this.monthTitle ? { month: this.monthTitle } : {}),
+        ...(this.monthNodeToken ? { monthNodeToken: this.monthNodeToken } : {}),
+      },
+    });
   }
 }
 
@@ -422,4 +483,52 @@ function packSectionsIntoChunks(sections: string[], maxChars: number): string[] 
 
   if (current) chunks.push(current);
   return chunks;
+}
+
+function formatTraceMonth(timestamp: number): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "unknown-month";
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  return `${year}-${month}`;
+}
+
+function parseWikiNode(stdout: string): { title?: string; nodeToken?: string; objToken?: string; url?: string } {
+  const json = JSON.parse(stdout) as unknown;
+  const candidates = collectObjects(json);
+  const match = candidates.find((item) => typeof item.node_token === "string" || typeof item.nodeToken === "string");
+  if (!match) return {};
+  return normalizeWikiNode(match);
+}
+
+function parseWikiNodes(stdout: string): Array<{ title?: string; nodeToken?: string; objToken?: string; url?: string }> {
+  const json = JSON.parse(stdout) as unknown;
+  return collectObjects(json)
+    .map(normalizeWikiNode)
+    .filter((node) => node.title && node.nodeToken);
+}
+
+function normalizeWikiNode(item: Record<string, unknown>): { title?: string; nodeToken?: string; objToken?: string; url?: string } {
+  const title = typeof item.title === "string" ? item.title : undefined;
+  const nodeToken = typeof item.node_token === "string"
+    ? item.node_token
+    : typeof item.nodeToken === "string"
+      ? item.nodeToken
+      : undefined;
+  const objToken = typeof item.obj_token === "string"
+    ? item.obj_token
+    : typeof item.objToken === "string"
+      ? item.objToken
+      : undefined;
+  const url = typeof item.url === "string" ? item.url : undefined;
+  return { title, nodeToken, objToken, url };
+}
+
+function collectObjects(value: unknown): Array<Record<string, unknown>> {
+  if (!value || typeof value !== "object") return [];
+  if (Array.isArray(value)) return value.flatMap(collectObjects);
+
+  const record = value as Record<string, unknown>;
+  const nested = Object.values(record).flatMap(collectObjects);
+  return [record, ...nested];
 }

@@ -34,11 +34,17 @@ export default function traceExtension(pi: ExtensionAPI): void {
   }
 
   if (config.markdown.enabled) {
-    core.registerConsumer(new MarkdownTraceConsumer({ outputDir: join(config.assetDir, "markdown") }));
+    core.registerConsumer(new MarkdownTraceConsumer({
+      outputDir: join(config.assetDir, "markdown"),
+      assetMapPath: config.assetMapPath,
+    }));
   }
 
   if (config.lark.enabled) {
-    core.registerConsumer(new LarkTraceConsumer({ wikiSpaceId: config.lark.wiki_space_id }));
+    core.registerConsumer(new LarkTraceConsumer({
+      wikiSpaceId: config.lark.wiki_space_id,
+      assetMapPath: config.assetMapPath,
+    }));
   }
 
   const producer = new TraceProducer(core);

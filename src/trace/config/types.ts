@@ -46,6 +46,7 @@ export interface LarkConfig {
 
 export interface TraceConfig {
   assetDir: string;
+  assetMapPath: string;
   console: ConsoleConfig;
   markdown: MarkdownConfig;
   lark: LarkConfig;

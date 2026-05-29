@@ -142,16 +142,17 @@ test("TraceProducer maps pi hooks to realtime and batch trace events", () => {
 
 test("MarkdownTraceConsumer writes batch records as a markdown execution document", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-trace-md-"));
+  const assetMapPath = join(dir, "pi-trace.assets.json");
 
   try {
-    const consumer = new MarkdownTraceConsumer({ outputDir: dir });
+    const consumer = new MarkdownTraceConsumer({ outputDir: dir, assetMapPath });
     const base = { kind: "batch", timestamp: 1, runId: "run-md" };
 
     consumer.consume({
       ...base,
       id: "m1",
       type: "message.record",
-      payload: { role: "user", content: "Run echo" },
+      payload: { role: "user", content: "Run echo", sessionId: "sess-md" },
     });
     consumer.consume({
       ...base,
@@ -179,7 +180,8 @@ test("MarkdownTraceConsumer writes batch records as a markdown execution documen
       },
     });
 
-    const markdown = readFileSync(join(dir, "trace.md"), "utf8");
+    const markdownPath = join(dir, "1970-01", "trace.md");
+    const markdown = readFileSync(markdownPath, "utf8");
     assert.match(markdown, /^# Pi Trace/m);
     assert.match(markdown, /^## User/m);
     assert.match(markdown, /Run echo/);
@@ -192,6 +194,9 @@ test("MarkdownTraceConsumer writes batch records as a markdown execution documen
     assert.match(markdown, /```text\ntrace-ok\n```/);
     assert.doesNotMatch(markdown, /^## Turn/m);
     assert.equal((markdown.match(/^```/gm) ?? []).length, 4);
+
+    const assetMap = JSON.parse(readFileSync(assetMapPath, "utf8"));
+    assert.deepEqual(assetMap.sessions["sess-md"].markdown, { path: markdownPath });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -204,6 +209,7 @@ test("resolveConfig uses a fixed asset directory and default consumer settings",
   try {
     const defaults = resolveConfig({ cwd: dir });
     assert.equal(defaults.assetDir, join(dir, "dev_assets"));
+    assert.equal(defaults.assetMapPath, join(dir, "dev_assets", "pi-trace.assets.json"));
     assert.equal(defaults.console.enabled, false);
     assert.equal(defaults.markdown.enabled, false);
     assert.equal(defaults.lark.enabled, false);
@@ -276,6 +282,29 @@ test("resolveConfig reads config file from dev_assets and merges with programmat
   }
 });
 
+test("resolveConfig places the asset map next to the active config file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-trace-config-dir-"));
+  const configDir = join(dir, "custom-config");
+  const configPath = join(configDir, "pi-trace.config.json");
+  const previous = process.env.PI_TRACE_CONFIG;
+
+  try {
+    process.env.PI_TRACE_CONFIG = configPath;
+    const config = resolveConfig({ cwd: dir, env: "production" });
+
+    assert.equal(config.assetDir, join(dir, "dev_assets"));
+    assert.equal(config.assetMapPath, join(configDir, "pi-trace.assets.json"));
+    assert.equal(existsSync(configPath), true);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.PI_TRACE_CONFIG;
+    } else {
+      process.env.PI_TRACE_CONFIG = previous;
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("resolveConfig creates a default config file on first use", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-trace-first-use-"));
 
@@ -337,16 +366,29 @@ test("resolveConfig merges lark config when enabled in config file", () => {
 test("LarkTraceConsumer generates XML and calls lark-cli with correct arguments", async () => {
   // Mock lark-cli executor
   const calls = [];
+  const dir = mkdtempSync(join(tmpdir(), "pi-trace-lark-map-"));
+  const assetMapPath = join(dir, "pi-trace.assets.json");
   class MockLarkConsumer extends LarkTraceConsumer {
     execLarkCli(args, stdin) {
       calls.push({ args, stdin });
-      // Simulate create response for first call
+      if (args.includes("+node-list")) {
+        return JSON.stringify({
+          ok: true,
+          data: {
+            items: [
+              { title: "1970-01", node_token: "month-node-123", obj_token: "month-doc-123" }
+            ]
+          }
+        });
+      }
+      // Simulate trace document create response
       if (args.includes("+node-create")) {
         return JSON.stringify({
           ok: true,
           data: {
             node_token: "node-test-123",
             obj_token: "doxcn-test-123",
+            url: "https://example.larksuite.com/docx/doxcn-test-123",
             title: "test-session"
           }
         });
@@ -355,7 +397,7 @@ test("LarkTraceConsumer generates XML and calls lark-cli with correct arguments"
     }
   }
 
-  const consumer = new MockLarkConsumer({ wikiSpaceId: "test-space-123" });
+  const consumer = new MockLarkConsumer({ wikiSpaceId: "test-space-123", assetMapPath });
   const base = { kind: "batch", timestamp: 1, runId: "run-lark" };
 
   // Feed events (await the turn.record which triggers flush)
@@ -408,16 +450,25 @@ test("LarkTraceConsumer generates XML and calls lark-cli with correct arguments"
   });
 
   // Verify lark-cli was called
-  assert.equal(calls.length, 3, "should call lark-cli three times (create node + append callout + append content)");
+  assert.equal(calls.length, 4, "should call lark-cli four times (find month + create child node + append callout + append content)");
 
-  // First call: create wiki node
-  const createCall = calls[0];
+  // First call: find month wiki node
+  const monthLookupCall = calls[0];
+  assert.ok(monthLookupCall.args.includes("+node-list"));
+  assert.ok(monthLookupCall.args.includes("--page-all"));
+  assert.ok(monthLookupCall.args.includes("--space-id"));
+  assert.ok(monthLookupCall.args.includes("test-space-123"));
+
+  // Second call: create wiki node under month document
+  const createCall = calls[1];
   assert.ok(createCall.args.includes("+node-create"));
   assert.ok(createCall.args.includes("--space-id"));
   assert.ok(createCall.args.includes("test-space-123"));
+  assert.ok(createCall.args.includes("--parent-node-token"));
+  assert.ok(createCall.args.includes("month-node-123"));
 
-  // Second call: append callout
-  const calloutCall = calls[1];
+  // Third call: append callout
+  const calloutCall = calls[2];
   assert.ok(calloutCall.args.includes("+update"));
   assert.ok(calloutCall.args.includes("--command"));
   assert.ok(calloutCall.args.includes("append"));
@@ -426,8 +477,8 @@ test("LarkTraceConsumer generates XML and calls lark-cli with correct arguments"
   assert.match(calloutCall.stdin, /<b>Session Name:<\/b>.*test-session/);
   assert.match(calloutCall.stdin, /<b>Model:<\/b>.*openai\/gpt-4/);
 
-  // Third call: append content
-  const appendCall = calls[2];
+  // Fourth call: append content
+  const appendCall = calls[3];
   assert.ok(appendCall.args.includes("+update"));
   assert.ok(appendCall.args.includes("--command"));
   assert.ok(appendCall.args.includes("append"));
@@ -440,6 +491,17 @@ test("LarkTraceConsumer generates XML and calls lark-cli with correct arguments"
   assert.match(appendCall.stdin, /<h2>Tool Call: bash \(success\)<\/h2>/);
   assert.match(appendCall.stdin, /<pre lang="json"><code>.*command.*echo test.*<\/code><\/pre>/);
   assert.match(appendCall.stdin, /<pre lang="text"><code>test output<\/code><\/pre>/);
+
+  const assetMap = JSON.parse(readFileSync(assetMapPath, "utf8"));
+  assert.deepEqual(assetMap.sessions["sess-123"].lark, {
+    documentToken: "doxcn-test-123",
+    documentUrl: "https://example.larksuite.com/docx/doxcn-test-123",
+    wikiSpaceId: "test-space-123",
+    month: "1970-01",
+    monthNodeToken: "month-node-123",
+  });
+
+  rmSync(dir, { recursive: true, force: true });
 });
 
 test("LarkTraceConsumer chunks long content correctly", async () => {
@@ -447,10 +509,16 @@ test("LarkTraceConsumer chunks long content correctly", async () => {
   class MockLarkConsumer extends LarkTraceConsumer {
     execLarkCli(args, stdin) {
       calls.push({ args, stdin });
-      if (args.includes("+create")) {
+      if (args.includes("+node-list")) {
         return JSON.stringify({
           ok: true,
-          data: { document: { document_id: "doc-456" } }
+          data: { items: [{ title: "1970-01", node_token: "month-node-456" }] }
+        });
+      }
+      if (args.includes("+node-create")) {
+        return JSON.stringify({
+          ok: true,
+          data: { obj_token: "doc-456" }
         });
       }
       return JSON.stringify({ ok: true });

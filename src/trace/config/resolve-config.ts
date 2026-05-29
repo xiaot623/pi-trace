@@ -5,6 +5,7 @@ import { DEFAULT_CONFIG } from "./default-config.js";
 import type { ConsoleConfig, LarkConfig, MarkdownConfig, ResolveConfigOptions, TraceConfig, TraceUserConfig } from "./types.js";
 
 const CONFIG_FILE_NAME = "pi-trace.config.json";
+const ASSET_MAP_FILE_NAME = "pi-trace.assets.json";
 
 export function resolveConfig(options: ResolveConfigOptions = {}): TraceConfig {
   const cwd = options.cwd ?? process.cwd();
@@ -25,6 +26,7 @@ export function resolveConfig(options: ResolveConfigOptions = {}): TraceConfig {
 
   return {
     assetDir,
+    assetMapPath: join(dirname(configPath), ASSET_MAP_FILE_NAME),
     console: {
       enabled: merged.console.enabled,
       filter: merged.console.filter,

@@ -64,3 +64,43 @@ export function getModelFromMessages(messages: unknown): { provider?: string; mo
   }
   return undefined;
 }
+
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
+  cost: number;
+}
+
+/** Aggregate token usage and cost across all assistant messages. */
+export function getUsageFromMessages(messages: unknown): TokenUsage | undefined {
+  if (!Array.isArray(messages)) return undefined;
+
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheWriteTokens = 0;
+  let totalTokens = 0;
+  let cost = 0;
+  let found = false;
+
+  for (const m of messages) {
+    if (!m || typeof m !== "object") continue;
+    const msg = m as Record<string, any>;
+    if (msg.role !== "assistant" || !msg.usage) continue;
+    found = true;
+    const u = msg.usage;
+    inputTokens += Number(u.input ?? 0);
+    outputTokens += Number(u.output ?? 0);
+    cacheReadTokens += Number(u.cacheRead ?? 0);
+    cacheWriteTokens += Number(u.cacheWrite ?? 0);
+    totalTokens += Number(u.totalTokens ?? 0);
+    if (u.cost && typeof u.cost === "object") {
+      cost += Number(u.cost.total ?? 0);
+    }
+  }
+
+  return found ? { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, totalTokens, cost } : undefined;
+}

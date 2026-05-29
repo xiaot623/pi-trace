@@ -160,9 +160,43 @@ export class LarkTraceConsumer implements TraceConsumer {
     if (!this.hasUserMessage && typeof payload.userInput === "string" && (payload.userInput as string).trim()) {
       this.pendingSections.push(`<h2>User</h2>`, contentToXml(payload.userInput as string));
     }
-    this.pendingSections.push(`<h1>Summary</h1>`);
-    this.pendingSections.push(xmlCodeBlock("json", safeJson(payload.stats ?? {})));
+    // Append cost/token usage entry as highlight block (never remove previous entries in multi-turn)
+    const stats = (payload.stats ?? {}) as Record<string, unknown>;
+    this.pendingSections.push(this.formatUsageXml(stats));
     await this.flush();
+  }
+
+  // --------------------------------------------------------------------------
+  // Usage formatting
+  // --------------------------------------------------------------------------
+
+  private formatUsageXml(stats: Record<string, unknown>): string {
+    const parts: string[] = [];
+    const inputTokens = stats.inputTokens;
+    const outputTokens = stats.outputTokens;
+    const cacheReadTokens = stats.cacheReadTokens;
+    const totalTokens = stats.totalTokens;
+    const cost = stats.cost;
+
+    if (typeof totalTokens === "number") {
+      parts.push(`Tokens: ${totalTokens}`);
+    }
+    if (typeof inputTokens === "number") {
+      let inputStr = `In: ${inputTokens}`;
+      if (typeof cacheReadTokens === "number" && cacheReadTokens > 0) {
+        inputStr += ` (cached ${cacheReadTokens})`;
+      }
+      parts.push(inputStr);
+    }
+    if (typeof outputTokens === "number") {
+      parts.push(`Out: ${outputTokens}`);
+    }
+    if (typeof cost === "number" && cost > 0) {
+      parts.push(`Cost: $${cost.toFixed(4)}`);
+    }
+
+    const text = parts.length > 0 ? parts.join(" | ") : "(no usage data)";
+    return `<callout emoji="💰" background-color="light-grey"><p>${escapeXml(text)}</p></callout>`;
   }
 
   // --------------------------------------------------------------------------

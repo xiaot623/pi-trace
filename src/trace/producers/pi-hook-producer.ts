@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { CurrentAgentRun, PendingToolRecord, TraceEvent, TraceKind } from "../core/types.js";
-import { contentToPreview, extractMessageDelta, getModelFromMessages, messageContent, messageRole } from "../core/utils.js";
+import { contentToPreview, extractMessageDelta, getModelFromMessages, getUsageFromMessages, messageContent, messageRole } from "../core/utils.js";
 import { TraceCore } from "../core/trace-core.js";
 
 export interface TraceProducerOptions {
@@ -80,6 +80,7 @@ export class TraceProducer {
   handleAgentEnd(event: any): void {
     const run = this.ensureRun();
     const model = getModelFromMessages(event?.messages);
+    const usage = getUsageFromMessages(event?.messages);
     this.publish("batch", "agent.run", {
       input: run.input,
       model,
@@ -89,6 +90,14 @@ export class TraceProducer {
         toolCount: run.toolCount,
         errorCount: run.errorCount,
         durationMs: this.now() - run.startedAt,
+        ...(usage ? {
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          cacheReadTokens: usage.cacheReadTokens,
+          cacheWriteTokens: usage.cacheWriteTokens,
+          totalTokens: usage.totalTokens,
+          cost: usage.cost,
+        } : {}),
       },
       eventIds: [...run.eventIds],
     }, { recordBatchId: false });

@@ -169,7 +169,42 @@ export class MarkdownTraceConsumer implements TraceConsumer {
       this.hasUser = true;
       this.sections.push("## User", "", input, "");
     }
-    this.sections.push("## Summary", "", "```json", safeJson(payload.stats ?? {}), "```", "");
+
+    // Append cost/token usage entry as blockquote (never remove previous entries in multi-turn)
+    const stats = payload.stats as Record<string, unknown> | undefined;
+    this.sections.push(
+      this.formatUsageLine(stats ?? {}),
+      "",
+    );
+  }
+
+  private formatUsageLine(stats: Record<string, unknown>): string {
+    const parts: string[] = [];
+    const inputTokens = stats.inputTokens;
+    const outputTokens = stats.outputTokens;
+    const cacheReadTokens = stats.cacheReadTokens;
+    const totalTokens = stats.totalTokens;
+    const cost = stats.cost;
+
+    if (typeof totalTokens === "number") {
+      parts.push(`**Tokens:** ${totalTokens}`);
+    }
+    if (typeof inputTokens === "number") {
+      let inputStr = `**In:** ${inputTokens}`;
+      if (typeof cacheReadTokens === "number" && cacheReadTokens > 0) {
+        inputStr += ` (cached ${cacheReadTokens})`;
+      }
+      parts.push(inputStr);
+    }
+    if (typeof outputTokens === "number") {
+      parts.push(`**Out:** ${outputTokens}`);
+    }
+    if (typeof cost === "number" && cost > 0) {
+      parts.push(`**Cost:** $${cost.toFixed(4)}`);
+    }
+
+    if (parts.length === 0) return "> (no usage data)";
+    return `> ${parts.join(" | ")}`;
   }
 
   private flush(): void {

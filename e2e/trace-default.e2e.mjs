@@ -64,7 +64,7 @@ test(
     assert.match(markdown, /^## Tool Call: bash \(success\)$/m, markdown);
     assert.match(markdown, /```json\n[\s\S]*echo trace-ok[\s\S]*\n```/, markdown);
     assert.match(markdown, /```text\n[\s\S]*trace-ok[\s\S]*\n```/, markdown);
-    assert.match(markdown, /^## Summary/m, markdown);
+    assert.match(markdown, /^> \*\*Tokens:\*\*/m, markdown);
 
     // Verify lark consumer created a document
     assert.match(output, /\[trace:lark\] created wiki node/, "lark consumer should create wiki node");
@@ -99,7 +99,7 @@ test(
     assert.match(markdown, /trace-turn-0/, markdown);
     assert.match(markdown, /trace-turn-1/, markdown);
     assert.equal((markdown.match(/^## Tool Call: bash \(success\)$/gm) ?? []).length, 2, markdown);
-    assert.match(markdown, /^## Summary/m, markdown);
+    assert.match(markdown, /^> \*\*Tokens:\*\*/m, markdown);
 
     assert.equal(existsSync(assetMapPath), true, `missing asset map: ${assetMapPath}`);
     const assetMap = JSON.parse(readFileSync(assetMapPath, "utf8"));

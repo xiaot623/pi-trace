@@ -240,6 +240,7 @@ export class TraceProducer {
         ...payload,
         ...(run.sessionId ? { sessionId: run.sessionId } : {}),
         ...(run.sessionName ? { sessionName: run.sessionName } : {}),
+        ...(run.input ? { input: run.input } : {}),
         ...(run.modelId ? { modelId: run.modelId } : {}),
         ...(run.modelName ? { modelName: run.modelName } : {}),
         ...(run.modelProvider ? { modelProvider: run.modelProvider } : {}),

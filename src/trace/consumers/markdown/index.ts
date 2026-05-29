@@ -46,15 +46,22 @@ export class MarkdownTraceConsumer implements TraceConsumer {
 
     const sessionId = event.payload.sessionId as string | undefined;
     const sessionName = event.payload.sessionName as string | undefined;
+    const input = event.payload.input as string | undefined;
     const modelId = event.payload.modelId as string | undefined;
     const modelProvider = event.payload.modelProvider as string | undefined;
     const cwd = event.payload.cwd as string | undefined;
 
-    if (sessionId) {
-      const sanitizedSessionName = sessionName
-        ? sessionName.trim().replace(/[^a-zA-Z0-9_-]/g, "_")
-        : undefined;
-      const namePart = sanitizedSessionName ? `${sanitizedSessionName}_${sessionId}` : sessionId;
+    let namePart = "trace";
+    if (sessionName && sessionName.trim()) {
+      namePart = sessionName.trim().replace(/[^a-zA-Z0-9_\-\u4e00-\u9fa5]/g, "_");
+    } else if (input && input.trim()) {
+      const firstLine = input.trim().split("\n")[0].trim();
+      namePart = firstLine.replace(/[^a-zA-Z0-9_\-\u4e00-\u9fa5]/g, "_").slice(0, 100);
+    } else if (sessionId) {
+      namePart = sessionId;
+    }
+
+    if (namePart !== "trace") {
       this.outputPath = join(this.outputDir, `${namePart}.md`);
     }
 

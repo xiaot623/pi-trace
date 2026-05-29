@@ -1,3 +1,5 @@
 node_modules/
 dist/
+dev_assets/*
+!dev_assets/.gitkeep
 .DS_Store

@@ -41,7 +41,6 @@ export function runPi(args, { timeoutMs = defaultTimeoutMs, env = {} } = {}) {
       cwd: repoRoot,
       env: {
         ...process.env,
-        PI_TRACE_KINDS: process.env.PI_TRACE_KINDS ?? "both",
         ...env,
       },
       stdio: ["ignore", "pipe", "pipe"],

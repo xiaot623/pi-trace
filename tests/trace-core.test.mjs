@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { MarkdownTraceConsumer, TraceCore, matchesTraceFilter, TraceProducer } from "../dist/index.js";
+import { MarkdownTraceConsumer, TraceCore, matchesTraceFilter, resolveTraceConsumerConfig, TraceProducer } from "../dist/index.js";
 
 class CaptureConsumer {
   constructor(name, filter) {
@@ -193,4 +193,39 @@ test("MarkdownTraceConsumer writes batch records as a markdown execution documen
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+
+test("resolveTraceConsumerConfig chooses environment-specific default asset directories", () => {
+  const now = new Date("2026-05-29T12:34:56.789Z");
+
+  const dev = resolveTraceConsumerConfig({ env: {}, cwd: "/repo", homeDir: "/home/me", now });
+  assert.equal(dev.mode, "development");
+  assert.equal(dev.assetDir, "/repo/dev_assets");
+  assert.equal(dev.console.enabled, true);
+  assert.equal(dev.markdown.enabled, true);
+  assert.equal(dev.markdown.outputPath, "/repo/dev_assets/markdown/trace-2026-05-29T12-34-56-789Z.md");
+
+  const prod = resolveTraceConsumerConfig({ env: { NODE_ENV: "production" }, cwd: "/repo", homeDir: "/home/me", now });
+  assert.equal(prod.mode, "production");
+  assert.equal(prod.assetDir, "/home/me/.pi-trace");
+  assert.equal(prod.markdown.outputPath, "/home/me/.pi-trace/markdown/trace-2026-05-29T12-34-56-789Z.md");
+
+  const overridden = resolveTraceConsumerConfig({
+    env: {
+      PI_TRACE_MODE: "production",
+      PI_TRACE_ASSET_DIR: "/custom/assets",
+      PI_TRACE_MARKDOWN_PATH: "/custom/trace.md",
+      PI_TRACE_CONSOLE_ENABLED: "false",
+      PI_TRACE_MARKDOWN_ENABLED: "false",
+    },
+    cwd: "/repo",
+    homeDir: "/home/me",
+    now,
+  });
+  assert.equal(overridden.mode, "production");
+  assert.equal(overridden.assetDir, "/custom/assets");
+  assert.equal(overridden.console.enabled, false);
+  assert.equal(overridden.markdown.enabled, false);
+  assert.equal(overridden.markdown.outputPath, "/custom/trace.md");
 });

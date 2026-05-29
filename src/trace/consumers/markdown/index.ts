@@ -66,16 +66,14 @@ export class MarkdownTraceConsumer implements TraceConsumer {
       return;
     }
 
-    const thinkingBlocks = content.filter(isThinkingBlock);
-    if (thinkingBlocks.length === 0) {
-      this.sections.push("## Thinking", "", "_Not captured._", "");
-    }
-
     for (const block of content) {
       if (!block || typeof block !== "object") continue;
       const item = block as Record<string, unknown>;
       if (item.type === "thinking") {
-        this.sections.push("## Thinking", "", String(item.thinking ?? ""), "");
+        const thinking = String(item.thinking ?? "").trim();
+        if (thinking) {
+          this.sections.push("## Thinking", "", thinking, "");
+        }
       } else if (item.type === "text") {
         this.sections.push("## Assistant", "", String(item.text ?? ""), "");
       }

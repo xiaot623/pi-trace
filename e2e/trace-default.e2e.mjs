@@ -34,7 +34,6 @@ test(
     const markdown = readFileSync(join(markdownDir, markdownFiles[0]), "utf8");
     assert.match(markdown, /^# Pi Trace/m, markdown);
     assert.match(markdown, /^## User/m, markdown);
-    assert.match(markdown, /^## Thinking/m, markdown);
     assert.match(markdown, /^## Assistant/m, markdown);
     assert.match(markdown, /^## Tool Call: bash \(success\)$/m, markdown);
     assert.match(markdown, /```json\n[\s\S]*echo trace-ok[\s\S]*\n```/, markdown);

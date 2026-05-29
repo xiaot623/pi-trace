@@ -22,6 +22,7 @@ test(
           consumers: {
             console: { enabled: true, filter: { kinds: ["both"] } },
             markdown: { enabled: true },
+            lark: { enabled: true, wiki_space_id: "process.env.WIKI_SPACE_ID || """ },
           },
         },
         null,
@@ -57,5 +58,9 @@ test(
     assert.match(markdown, /```json\n[\s\S]*echo trace-ok[\s\S]*\n```/, markdown);
     assert.match(markdown, /```text\n[\s\S]*trace-ok[\s\S]*\n```/, markdown);
     assert.match(markdown, /^## Summary/m, markdown);
+
+    // Verify lark consumer created a document
+    assert.match(output, /\[trace:lark\] created wiki node/, "lark consumer should create wiki node");
+    assert.match(output, /\[trace:lark\] flush #\d+ ok/, "lark consumer should flush successfully");
   },
 );

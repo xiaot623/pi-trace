@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { MarkdownTraceConsumer, TraceCore, matchesTraceFilter, resolveConfig, TraceProducer } from "../dist/index.js";
+import { LarkTraceConsumer, MarkdownTraceConsumer, TraceCore, matchesTraceFilter, resolveConfig, TraceProducer } from "../dist/index.js";
 
 class CaptureConsumer {
   constructor(name, filter) {
@@ -206,6 +206,8 @@ test("resolveConfig uses a fixed asset directory and default consumer settings",
     assert.equal(defaults.assetDir, join(dir, "dev_assets"));
     assert.equal(defaults.console.enabled, false);
     assert.equal(defaults.markdown.enabled, false);
+    assert.equal(defaults.lark.enabled, false);
+    assert.equal(defaults.lark.wiki_space_id, "");
 
     const overridden = resolveConfig({
       cwd: dir,
@@ -220,6 +222,7 @@ test("resolveConfig uses a fixed asset directory and default consumer settings",
     assert.equal(overridden.console.enabled, true);
     assert.deepEqual(overridden.console.filter, { kinds: ["realtime", "batch"] });
     assert.equal(overridden.markdown.enabled, true);
+    assert.equal(overridden.lark.enabled, false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -250,6 +253,8 @@ test("resolveConfig reads config file from dev_assets and merges with programmat
     assert.equal(fromFile.console.enabled, false);
     assert.deepEqual(fromFile.console.filter, { kinds: ["realtime"] });
     assert.equal(fromFile.markdown.enabled, false);
+    assert.equal(fromFile.lark.enabled, false);
+    assert.equal(fromFile.lark.wiki_space_id, "");
 
     const overridden = resolveConfig({
       cwd: dir,
@@ -265,6 +270,7 @@ test("resolveConfig reads config file from dev_assets and merges with programmat
     assert.equal(overridden.console.enabled, true);
     assert.deepEqual(overridden.console.filter, { kinds: ["both"] });
     assert.equal(overridden.markdown.enabled, true);
+    assert.equal(overridden.lark.enabled, false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -285,7 +291,208 @@ test("resolveConfig creates a default config file on first use", () => {
     assert.equal(writtenConfig.consumers.console.enabled, false);
     assert.deepEqual(writtenConfig.consumers.console.filter, { kinds: ["both"] });
     assert.equal(writtenConfig.consumers.markdown.enabled, false);
+    assert.equal(writtenConfig.consumers.lark.enabled, false);
+    assert.equal(writtenConfig.consumers.lark.wiki_space_id, "");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("resolveConfig merges lark config when enabled in config file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-trace-lark-enabled-"));
+  const assetDir = join(dir, "dev_assets");
+  const configPath = join(assetDir, "pi-trace.config.json");
+
+  try {
+    mkdirSync(assetDir, { recursive: true });
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        consumers: {
+          lark: { enabled: true, wiki_space_id: "custom-space-456" },
+        },
+      }),
+      "utf8",
+    );
+
+    const config = resolveConfig({ cwd: dir });
+    assert.equal(config.lark.enabled, true);
+    assert.equal(config.lark.wiki_space_id, "custom-space-456");
+
+    const overridden = resolveConfig({
+      cwd: dir,
+      config: {
+        consumers: {
+          lark: { wiki_space_id: "override-space-789" },
+        },
+      },
+    });
+    assert.equal(overridden.lark.enabled, true);
+    assert.equal(overridden.lark.wiki_space_id, "override-space-789");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("LarkTraceConsumer generates XML and calls lark-cli with correct arguments", async () => {
+  // Mock lark-cli executor
+  const calls = [];
+  class MockLarkConsumer extends LarkTraceConsumer {
+    execLarkCli(args, stdin) {
+      calls.push({ args, stdin });
+      // Simulate create response for first call
+      if (args.includes("+node-create")) {
+        return JSON.stringify({
+          ok: true,
+          data: {
+            node_token: "node-test-123",
+            obj_token: "doxcn-test-123",
+            title: "test-session"
+          }
+        });
+      }
+      return JSON.stringify({ ok: true });
+    }
+  }
+
+  const consumer = new MockLarkConsumer({ wikiSpaceId: "test-space-123" });
+  const base = { kind: "batch", timestamp: 1, runId: "run-lark" };
+
+  // Feed events (await the turn.record which triggers flush)
+  consumer.consume({
+    ...base,
+    id: "m1",
+    type: "message.record",
+    payload: {
+      role: "user",
+      content: "Run echo",
+      sessionId: "sess-123",
+      sessionName: "test-session",
+      modelId: "gpt-4",
+      modelProvider: "openai",
+      cwd: "/test/workspace",
+      userInput: "Run echo"
+    },
+  });
+
+  consumer.consume({
+    ...base,
+    id: "m2",
+    type: "message.record",
+    payload: {
+      role: "assistant",
+      content: [
+        { type: "text", text: "I will run the command." },
+      ],
+    },
+  });
+
+  consumer.consume({
+    ...base,
+    id: "t1",
+    type: "tool.record",
+    payload: {
+      toolName: "bash",
+      toolCallId: "tool-1",
+      input: { command: "echo test" },
+      resultContent: [{ type: "text", text: "test output" }],
+      isError: false,
+    },
+  });
+
+  await consumer.consume({
+    ...base,
+    id: "turn1",
+    type: "turn.record",
+    payload: { turnIndex: 0 },
+  });
+
+  // Verify lark-cli was called
+  assert.equal(calls.length, 3, "should call lark-cli three times (create node + append callout + append content)");
+
+  // First call: create wiki node
+  const createCall = calls[0];
+  assert.ok(createCall.args.includes("+node-create"));
+  assert.ok(createCall.args.includes("--space-id"));
+  assert.ok(createCall.args.includes("test-space-123"));
+
+  // Second call: append callout
+  const calloutCall = calls[1];
+  assert.ok(calloutCall.args.includes("+update"));
+  assert.ok(calloutCall.args.includes("--command"));
+  assert.ok(calloutCall.args.includes("append"));
+  assert.match(calloutCall.stdin, /<callout[^>]*>/);
+  assert.match(calloutCall.stdin, /<b>Run ID:<\/b>.*run-lark/);
+  assert.match(calloutCall.stdin, /<b>Session Name:<\/b>.*test-session/);
+  assert.match(calloutCall.stdin, /<b>Model:<\/b>.*openai\/gpt-4/);
+
+  // Third call: append content
+  const appendCall = calls[2];
+  assert.ok(appendCall.args.includes("+update"));
+  assert.ok(appendCall.args.includes("--command"));
+  assert.ok(appendCall.args.includes("append"));
+  assert.ok(appendCall.args.includes("--doc"));
+  assert.ok(appendCall.args.includes("doxcn-test-123"));
+  assert.match(appendCall.stdin, /<h2>User<\/h2>/);
+  assert.match(appendCall.stdin, /Run echo/);
+  assert.match(appendCall.stdin, /<h2>Assistant<\/h2>/);
+  assert.match(appendCall.stdin, /I will run the command/);
+  assert.match(appendCall.stdin, /<h2>Tool Call: bash \(success\)<\/h2>/);
+  assert.match(appendCall.stdin, /<pre lang="json"><code>.*command.*echo test.*<\/code><\/pre>/);
+  assert.match(appendCall.stdin, /<pre lang="text"><code>test output<\/code><\/pre>/);
+});
+
+test("LarkTraceConsumer chunks long content correctly", async () => {
+  const calls = [];
+  class MockLarkConsumer extends LarkTraceConsumer {
+    execLarkCli(args, stdin) {
+      calls.push({ args, stdin });
+      if (args.includes("+create")) {
+        return JSON.stringify({
+          ok: true,
+          data: { document: { document_id: "doc-456" } }
+        });
+      }
+      return JSON.stringify({ ok: true });
+    }
+  }
+
+  const consumer = new MockLarkConsumer({ wikiSpaceId: "space-456" });
+  const base = { kind: "batch", timestamp: 1, runId: "run-chunk" };
+
+  // Create a very long tool result (50KB)
+  const longText = "x".repeat(50000);
+
+  consumer.consume({
+    ...base,
+    id: "t1",
+    type: "tool.record",
+    payload: {
+      toolName: "read",
+      toolCallId: "tool-2",
+      input: { path: "big.txt" },
+      resultContent: [{ type: "text", text: longText }],
+      isError: false,
+    },
+  });
+
+  await consumer.consume({
+    ...base,
+    id: "turn1",
+    type: "turn.record",
+    payload: { turnIndex: 0 },
+  });
+
+  // Should have multiple append calls due to chunking
+  const appendCalls = calls.filter(c => c.args.includes("append"));
+  assert.ok(appendCalls.length >= 2, `should chunk long content, got ${appendCalls.length} append calls`);
+
+  // All chunks should be under the limit (30KB)
+  for (const call of appendCalls) {
+    assert.ok(call.stdin.length <= 30000, `chunk size ${call.stdin.length} exceeds 30KB limit`);
+  }
+
+  // Total content should be preserved (approximately)
+  const totalLength = appendCalls.reduce((sum, c) => sum + c.stdin.length, 0);
+  assert.ok(totalLength > 40000, `total content ${totalLength} should preserve most of the 50KB`);
 });

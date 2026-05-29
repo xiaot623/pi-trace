@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DEFAULT_CONFIG } from "./default-config.js";
-import type { ConsoleConfig, MarkdownConfig, ResolveConfigOptions, TraceConfig, TraceUserConfig } from "./types.js";
+import type { ConsoleConfig, LarkConfig, MarkdownConfig, ResolveConfigOptions, TraceConfig, TraceUserConfig } from "./types.js";
 
 const CONFIG_FILE_NAME = "pi-trace.config.json";
 
@@ -21,7 +21,7 @@ export function resolveConfig(options: ResolveConfigOptions = {}): TraceConfig {
     DEFAULT_CONFIG,
     fileConfig?.consumers,
     options.config?.consumers,
-  ) as { console: ConsoleConfig; markdown: MarkdownConfig };
+  ) as { console: ConsoleConfig; markdown: MarkdownConfig; lark: LarkConfig };
 
   return {
     assetDir,
@@ -31,6 +31,10 @@ export function resolveConfig(options: ResolveConfigOptions = {}): TraceConfig {
     },
     markdown: {
       enabled: merged.markdown.enabled,
+    },
+    lark: {
+      enabled: merged.lark.enabled,
+      wiki_space_id: merged.lark.wiki_space_id,
     },
   };
 }
@@ -61,26 +65,52 @@ function loadConfigFile(configPath: string): TraceUserConfig | undefined {
 }
 
 function ensureDefaultConfigFile(configPath: string): void {
-  if (existsSync(configPath)) {
-    return;
-  }
-
-  const defaultFileContent = {
-    consumers: {
-      console: {
-        enabled: DEFAULT_CONFIG.console.enabled,
-        filter: DEFAULT_CONFIG.console.filter,
-      },
-      markdown: {
-        enabled: DEFAULT_CONFIG.markdown.enabled,
-      },
+  const defaultConsumers: Record<string, unknown> = {
+    console: {
+      enabled: DEFAULT_CONFIG.console.enabled,
+      filter: DEFAULT_CONFIG.console.filter,
+    },
+    markdown: {
+      enabled: DEFAULT_CONFIG.markdown.enabled,
+    },
+    lark: {
+      enabled: DEFAULT_CONFIG.lark.enabled,
+      wiki_space_id: DEFAULT_CONFIG.lark.wiki_space_id,
     },
   };
 
   try {
+    if (existsSync(configPath)) {
+      // File exists — backfill any new consumer keys the user hasn't configured yet
+      const content = readFileSync(configPath, "utf8");
+      const parsed = JSON.parse(content) as Record<string, unknown>;
+      const consumers = (parsed.consumers && typeof parsed.consumers === "object"
+        ? parsed.consumers
+        : {}) as Record<string, unknown>;
+
+      let changed = false;
+      for (const [key, defaultValue] of Object.entries(defaultConsumers)) {
+        if (!(key in consumers)) {
+          consumers[key] = defaultValue;
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        parsed.consumers = consumers;
+        writeFileSync(configPath, JSON.stringify(parsed, null, 2) + "\n", "utf8");
+      }
+      return;
+    }
+
+    // File doesn't exist — create with all defaults
     const dir = dirname(configPath);
     mkdirSync(dir, { recursive: true });
-    writeFileSync(configPath, JSON.stringify(defaultFileContent, null, 2) + "\n", "utf8");
+    writeFileSync(
+      configPath,
+      JSON.stringify({ consumers: defaultConsumers }, null, 2) + "\n",
+      "utf8",
+    );
   } catch {
     // Silently skip if directory is not writable (e.g. read-only filesystem)
   }
@@ -107,5 +137,3 @@ function mergeConsumerConfigs(
 
   return result;
 }
-
-

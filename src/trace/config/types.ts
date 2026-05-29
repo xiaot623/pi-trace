@@ -13,10 +13,16 @@ export interface MarkdownUserConfig {
   enabled?: boolean;
 }
 
+export interface LarkUserConfig {
+  enabled?: boolean;
+  wiki_space_id?: string;
+}
+
 export interface TraceUserConfig {
   consumers?: {
     console?: ConsoleUserConfig;
     markdown?: MarkdownUserConfig;
+    lark?: LarkUserConfig;
   };
 }
 
@@ -33,10 +39,16 @@ export interface MarkdownConfig {
   enabled: boolean;
 }
 
+export interface LarkConfig {
+  enabled: boolean;
+  wiki_space_id: string;
+}
+
 export interface TraceConfig {
   assetDir: string;
   console: ConsoleConfig;
   markdown: MarkdownConfig;
+  lark: LarkConfig;
 }
 
 // ============================================================================

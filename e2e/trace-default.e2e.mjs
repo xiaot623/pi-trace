@@ -1,16 +1,34 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { defaultTimeoutMs, formatFailure, repoRoot, runPiTraceE2E } from "./helpers/pi-runner.mjs";
 
 const markdownDir = join(repoRoot, "dev_assets", "markdown");
+const configPath = join(repoRoot, "dev_assets", "pi-trace.config.json");
 
 test(
-  "default development config runs all enabled consumers in one real pi run",
+  "config with enabled consumers runs all consumers in one real pi run",
   { timeout: defaultTimeoutMs + 10_000 },
   async () => {
     rmSync(markdownDir, { recursive: true, force: true });
+
+    // Create config with consumers enabled
+    mkdirSync(join(repoRoot, "dev_assets"), { recursive: true });
+    writeFileSync(
+      configPath,
+      JSON.stringify(
+        {
+          consumers: {
+            console: { enabled: true, filter: { kinds: ["both"] } },
+            markdown: { enabled: true },
+          },
+        },
+        null,
+        2
+      ) + "\n",
+      "utf8"
+    );
 
     const result = await runPiTraceE2E();
     assert.equal(result.code, 0, formatFailure(result));

@@ -19,21 +19,25 @@ E2E 只跑默认开发配置：一次真实 pi run 会触发所有默认启用�
 
 当前默认启用 Console 和 Markdown 两种 Consumer。Markdown Consumer 通过统一 Consumer 配置决定输出位置：
 
-- 开发模式：`<当前目录>/dev_assets/markdown/trace-<timestamp>.md`
-- 正式环境：`~/.pi-trace/markdown/trace-<timestamp>.md`
+- 默认路径：`<当前目录>/dev_assets/markdown/trace-<timestamp>.md`
 
-模式判断：
+首次启动会在固定资产目录创建配置文件：`<当前目录>/dev_assets/pi-trace.config.json`。默认内容来自 `src/trace/config/default-config-template.ts` 中的 JSON 文本块，创建时会把 `markdown.outputPath` 写成绝对路径。
 
-- `PI_TRACE_MODE=production` 或 `NODE_ENV=production` => 正式环境
-- 其它情况 => 开发模式
+后续只通过配置文件控制 Consumer 是否开启及相关参数，不再使用环境变量覆盖：
 
-常用覆盖项：
-
-```bash
-PI_TRACE_ASSET_DIR=/tmp/pi-trace-assets       # 覆盖资产根目录
-PI_TRACE_CONSOLE_ENABLED=false                # 禁用 Console Consumer
-PI_TRACE_MARKDOWN_PATH=/tmp/trace.md          # 覆盖 Markdown 文件路径
-PI_TRACE_MARKDOWN_ENABLED=false               # 禁用 Markdown Consumer
+```json
+{
+  "consumers": {
+    "console": {
+      "enabled": true,
+      "filter": { "kinds": ["both"] }
+    },
+    "markdown": {
+      "enabled": true,
+      "outputPath": "/absolute/path/to/dev_assets/markdown/trace-{timestamp}.md"
+    }
+  }
+}
 ```
 
 ## 运行

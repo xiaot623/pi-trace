@@ -1,23 +1,25 @@
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { mkdirSync, writeFileSync } from "node:fs";
 import type { TraceConsumer, TraceEvent } from "../../core/types.js";
 import { safeJson } from "../../core/utils.js";
 
 export interface MarkdownTraceConsumerOptions {
-  outputPath: string;
+  outputDir: string;
 }
 
 export class MarkdownTraceConsumer implements TraceConsumer {
   readonly name = "markdown";
   readonly filter = { kinds: ["batch" as const] };
 
+  private readonly outputDir: string;
   private outputPath: string;
   private readonly sections: string[] = [];
   private initialized = false;
   private hasUser = false;
 
   constructor(options: MarkdownTraceConsumerOptions) {
-    this.outputPath = options.outputPath;
+    this.outputDir = options.outputDir;
+    this.outputPath = join(options.outputDir, "trace.md");
   }
 
   consume(event: TraceEvent): void {
@@ -53,8 +55,7 @@ export class MarkdownTraceConsumer implements TraceConsumer {
         ? sessionName.trim().replace(/[^a-zA-Z0-9_-]/g, "_")
         : undefined;
       const namePart = sanitizedSessionName ? `${sanitizedSessionName}_${sessionId}` : sessionId;
-      const dir = dirname(this.outputPath);
-      this.outputPath = join(dir, `${namePart}.md`);
+      this.outputPath = join(this.outputDir, `${namePart}.md`);
     }
 
     this.sections.push("# Pi Trace", "");
@@ -137,7 +138,7 @@ export class MarkdownTraceConsumer implements TraceConsumer {
   }
 
   private flush(): void {
-    mkdirSync(dirname(this.outputPath), { recursive: true });
+    mkdirSync(this.outputDir, { recursive: true });
     writeFileSync(this.outputPath, `${this.sections.join("\n").trimEnd()}\n`, "utf8");
   }
 }

@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { MarkdownTraceConsumer, TraceCore, matchesTraceFilter, resolveTraceConsumerConfig, TraceProducer } from "../dist/index.js";
+import { MarkdownTraceConsumer, TraceCore, matchesTraceFilter, resolveConfig, TraceProducer } from "../dist/index.js";
 
 class CaptureConsumer {
   constructor(name, filter) {
@@ -142,10 +142,9 @@ test("TraceProducer maps pi hooks to realtime and batch trace events", () => {
 
 test("MarkdownTraceConsumer writes batch records as a markdown execution document", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-trace-md-"));
-  const outputPath = join(dir, "trace.md");
 
   try {
-    const consumer = new MarkdownTraceConsumer({ outputPath });
+    const consumer = new MarkdownTraceConsumer({ outputDir: dir });
     const base = { kind: "batch", timestamp: 1, runId: "run-md" };
 
     consumer.consume({
@@ -180,7 +179,7 @@ test("MarkdownTraceConsumer writes batch records as a markdown execution documen
       },
     });
 
-    const markdown = readFileSync(outputPath, "utf8");
+    const markdown = readFileSync(join(dir, "trace.md"), "utf8");
     assert.match(markdown, /^# Pi Trace/m);
     assert.match(markdown, /^## User/m);
     assert.match(markdown, /Run echo/);
@@ -199,36 +198,94 @@ test("MarkdownTraceConsumer writes batch records as a markdown execution documen
 });
 
 
-test("resolveTraceConsumerConfig chooses environment-specific default asset directories", () => {
+test("resolveConfig uses a fixed asset directory and default consumer settings", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-trace-defaults-"));
+
+  try {
+    const defaults = resolveConfig({ cwd: dir });
+    assert.equal(defaults.assetDir, join(dir, "dev_assets"));
+    assert.equal(defaults.console.enabled, false);
+    assert.equal(defaults.markdown.enabled, false);
+
+    const overridden = resolveConfig({
+      cwd: dir,
+      config: {
+        consumers: {
+          console: { enabled: true, filter: { kinds: ["realtime", "batch"] } },
+          markdown: { enabled: true },
+        },
+      },
+    });
+    assert.equal(overridden.assetDir, join(dir, "dev_assets"));
+    assert.equal(overridden.console.enabled, true);
+    assert.deepEqual(overridden.console.filter, { kinds: ["realtime", "batch"] });
+    assert.equal(overridden.markdown.enabled, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("resolveConfig reads config file from dev_assets and merges with programmatic overrides", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-trace-config-"));
+  const assetDir = join(dir, "dev_assets");
+  const configPath = join(assetDir, "pi-trace.config.json");
   const now = new Date("2026-05-29T12:34:56.789Z");
 
-  const dev = resolveTraceConsumerConfig({ env: {}, cwd: "/repo", homeDir: "/home/me", now });
-  assert.equal(dev.mode, "development");
-  assert.equal(dev.assetDir, "/repo/dev_assets");
-  assert.equal(dev.console.enabled, true);
-  assert.equal(dev.markdown.enabled, true);
-  assert.equal(dev.markdown.outputPath, "/repo/dev_assets/markdown/trace-2026-05-29T12-34-56-789Z.md");
+  try {
+    mkdirSync(assetDir, { recursive: true });
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        consumers: {
+          console: { enabled: false, filter: { kinds: ["realtime"] } },
+          markdown: { enabled: false },
+        },
+      }),
+      "utf8",
+    );
 
-  const prod = resolveTraceConsumerConfig({ env: { NODE_ENV: "production" }, cwd: "/repo", homeDir: "/home/me", now });
-  assert.equal(prod.mode, "production");
-  assert.equal(prod.assetDir, "/home/me/.pi-trace");
-  assert.equal(prod.markdown.outputPath, "/home/me/.pi-trace/markdown/trace-2026-05-29T12-34-56-789Z.md");
+    const fromFile = resolveConfig({ cwd: dir, now });
 
-  const overridden = resolveTraceConsumerConfig({
-    env: {
-      PI_TRACE_MODE: "production",
-      PI_TRACE_ASSET_DIR: "/custom/assets",
-      PI_TRACE_MARKDOWN_PATH: "/custom/trace.md",
-      PI_TRACE_CONSOLE_ENABLED: "false",
-      PI_TRACE_MARKDOWN_ENABLED: "false",
-    },
-    cwd: "/repo",
-    homeDir: "/home/me",
-    now,
-  });
-  assert.equal(overridden.mode, "production");
-  assert.equal(overridden.assetDir, "/custom/assets");
-  assert.equal(overridden.console.enabled, false);
-  assert.equal(overridden.markdown.enabled, false);
-  assert.equal(overridden.markdown.outputPath, "/custom/trace.md");
+    assert.equal(fromFile.assetDir, assetDir);
+    assert.equal(fromFile.console.enabled, false);
+    assert.deepEqual(fromFile.console.filter, { kinds: ["realtime"] });
+    assert.equal(fromFile.markdown.enabled, false);
+
+    const overridden = resolveConfig({
+      cwd: dir,
+      now,
+      config: {
+        consumers: {
+          console: { enabled: true, filter: { kinds: ["both"] } },
+          markdown: { enabled: true },
+        },
+      },
+    });
+
+    assert.equal(overridden.console.enabled, true);
+    assert.deepEqual(overridden.console.filter, { kinds: ["both"] });
+    assert.equal(overridden.markdown.enabled, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("resolveConfig creates a default config file on first use", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-trace-first-use-"));
+
+  try {
+    const config = resolveConfig({ cwd: dir });
+    const configPath = join(dir, "dev_assets", "pi-trace.config.json");
+
+    assert.equal(existsSync(configPath), true);
+    assert.equal(config.assetDir, join(dir, "dev_assets"));
+
+    // Verify the written config has correct defaults
+    const writtenConfig = JSON.parse(readFileSync(configPath, "utf8"));
+    assert.equal(writtenConfig.consumers.console.enabled, false);
+    assert.deepEqual(writtenConfig.consumers.console.filter, { kinds: ["both"] });
+    assert.equal(writtenConfig.consumers.markdown.enabled, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

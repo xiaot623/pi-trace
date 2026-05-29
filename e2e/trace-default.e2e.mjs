@@ -36,8 +36,9 @@ test(
     assert.match(markdown, /^## User/m, markdown);
     assert.match(markdown, /^## Thinking/m, markdown);
     assert.match(markdown, /^## Assistant/m, markdown);
-    assert.match(markdown, /^## Tool Call/m, markdown);
+    assert.match(markdown, /^## Tool Call: bash \(success\)$/m, markdown);
+    assert.match(markdown, /```json\n[\s\S]*echo trace-ok[\s\S]*\n```/, markdown);
+    assert.match(markdown, /```text\n[\s\S]*trace-ok[\s\S]*\n```/, markdown);
     assert.match(markdown, /^## Summary/m, markdown);
-    assert.match(markdown, /trace-ok/, markdown);
   },
 );

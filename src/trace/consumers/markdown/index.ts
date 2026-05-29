@@ -81,38 +81,20 @@ export class MarkdownTraceConsumer implements TraceConsumer {
         this.sections.push("## Thinking", "", String(item.thinking ?? ""), "");
       } else if (item.type === "text") {
         this.sections.push("## Assistant", "", String(item.text ?? ""), "");
-      } else if (item.type === "toolCall") {
-        this.sections.push(
-          "## Tool Call",
-          "",
-          `Tool: \`${String(item.name ?? "unknown")}\``,
-          "",
-          "```json",
-          safeJson(item.arguments ?? {}),
-          "```",
-          "",
-        );
       }
     }
   }
 
   private renderToolCall(payload: Record<string, unknown>): void {
+    const toolName = String(payload.toolName ?? "unknown");
+    const status = payload.isError ? "error" : "success";
+
     this.sections.push(
-      "## Tool Call",
+      `## Tool Call: ${toolName} (${status})`,
       "",
-      `Tool: \`${String(payload.toolName ?? "unknown")}\``,
+      fencedCode("json", safeJson(payload.input ?? null)),
       "",
-      `Tool Call ID: \`${String(payload.toolCallId ?? "unknown")}\``,
-      "",
-      "### Input",
-      "",
-      "```json",
-      safeJson(payload.input ?? null),
-      "```",
-      "",
-      "### Result",
-      "",
-      renderContentAsMarkdown(payload.resultContent),
+      fencedCode("text", renderContentAsPlainText(payload.resultContent)),
       "",
     );
   }
@@ -146,6 +128,22 @@ function isThinkingBlock(block: unknown): boolean {
   return Boolean(block && typeof block === "object" && (block as Record<string, unknown>).type === "thinking");
 }
 
+function renderContentAsPlainText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return safeJson(content);
+
+  const parts = content.map((block) => {
+    if (!block || typeof block !== "object") return "";
+    const item = block as Record<string, unknown>;
+    if (item.type === "text") return String(item.text ?? "");
+    if (item.type === "thinking") return String(item.thinking ?? "");
+    if (item.type === "image") return "[image]";
+    return safeJson(item);
+  });
+
+  return parts.filter(Boolean).join("\n\n");
+}
+
 function renderContentAsMarkdown(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return fencedJson(content);
@@ -163,5 +161,11 @@ function renderContentAsMarkdown(content: unknown): string {
 }
 
 function fencedJson(value: unknown): string {
-  return ["```json", safeJson(value), "```"].join("\n");
+  return fencedCode("json", safeJson(value));
+}
+
+function fencedCode(language: string, value: string): string {
+  const longestBacktickRun = Math.max(0, ...Array.from(value.matchAll(/`+/g), (match) => match[0].length));
+  const fence = "`".repeat(Math.max(3, longestBacktickRun + 1));
+  return [`${fence}${language}`, value, fence].join("\n");
 }

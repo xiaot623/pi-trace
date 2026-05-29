@@ -176,6 +176,7 @@ test("MarkdownTraceConsumer writes batch records as a markdown execution documen
         toolCallId: "tool-1",
         input: { command: "echo trace-ok" },
         resultContent: [{ type: "text", text: "trace-ok" }],
+        isError: false,
       },
     });
 
@@ -187,9 +188,10 @@ test("MarkdownTraceConsumer writes batch records as a markdown execution documen
     assert.match(markdown, /Need to run bash\./);
     assert.match(markdown, /^## Assistant/m);
     assert.match(markdown, /I will run the command\./);
-    assert.match(markdown, /^## Tool Call/m);
-    assert.match(markdown, /echo trace-ok/);
-    assert.match(markdown, /trace-ok/);
+    assert.match(markdown, /^## Tool Call: bash \(success\)$/m);
+    assert.match(markdown, /```json\n\{"command":"echo trace-ok"\}\n```/);
+    assert.match(markdown, /```text\ntrace-ok\n```/);
+    assert.equal((markdown.match(/^```/gm) ?? []).length, 4);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

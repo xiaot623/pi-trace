@@ -1,26 +1,27 @@
-import test from "node:test";
-import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(__dirname, "..");
-const extensionPath = resolve(repoRoot, "src/index.ts");
-const model = process.env.PI_E2E_MODEL ?? "openai-codex/gpt-5.4-mini";
-const timeoutMs = Number(process.env.PI_E2E_TIMEOUT_MS ?? 180_000);
+export const repoRoot = resolve(__dirname, "../..");
+export const extensionPath = resolve(repoRoot, "src/index.ts");
+export const defaultModel = process.env.PI_E2E_MODEL ?? "openai-codex/gpt-5.4-mini";
+export const defaultTimeoutMs = Number(process.env.PI_E2E_TIMEOUT_MS ?? 180_000);
 
-const prompt = [
+export const toolPrompt = [
   "这是 pi-trace 的端到端冒烟测试。",
   "请只做一件事：调用 bash 工具执行 `echo trace-ok`。",
   "然后用一句话结束。",
 ].join("\n");
 
-test(
-  "trace console extension emits realtime and batch events in a real pi run",
-  { timeout: timeoutMs + 10_000 },
-  async () => {
-    const result = await runPi([
+export function runPiTraceE2E({
+  model = defaultModel,
+  timeoutMs = defaultTimeoutMs,
+  prompt = toolPrompt,
+  env = {},
+} = {}) {
+  return runPi(
+    [
       "--no-extensions",
       "-e",
       extensionPath,
@@ -29,31 +30,19 @@ test(
       model,
       "-p",
       prompt,
-    ]);
+    ],
+    { timeoutMs, env },
+  );
+}
 
-    assert.equal(result.code, 0, formatFailure(result));
-
-    const output = `${result.stdout}\n${result.stderr}`;
-    assert.match(output, /\[trace realtime\] turn\.started/, output);
-    assert.match(output, /\[trace realtime\] message\.started role=assistant/, output);
-    assert.match(output, /\[trace realtime\] tool\.started bash/, output);
-    assert.match(output, /\[trace realtime\] tool\.result bash/, output);
-    assert.match(output, /\[trace realtime\] tool\.ended bash/, output);
-    assert.match(output, /\[trace batch\] message\.record role=assistant/, output);
-    assert.match(output, /\[trace batch\] tool\.record bash/, output);
-    assert.match(output, /\[trace batch\] turn\.record turn=0/, output);
-    assert.match(output, /\[trace batch\] agent\.run/, output);
-    assert.match(output, /trace-ok/, output);
-  },
-);
-
-function runPi(args) {
+export function runPi(args, { timeoutMs = defaultTimeoutMs, env = {} } = {}) {
   return new Promise((resolvePromise, reject) => {
     const child = spawn("pi", args, {
       cwd: repoRoot,
       env: {
         ...process.env,
         PI_TRACE_KINDS: process.env.PI_TRACE_KINDS ?? "both",
+        ...env,
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -92,7 +81,7 @@ function runPi(args) {
   });
 }
 
-function formatFailure(result) {
+export function formatFailure(result) {
   return [
     `pi exited with code=${result.code} signal=${result.signal ?? ""}`,
     "--- stdout ---",

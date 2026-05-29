@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { TraceCore, matchesTraceFilter, TraceProducer } from "../dist/index.js";
+import { MarkdownTraceConsumer, TraceCore, matchesTraceFilter, TraceProducer } from "../dist/index.js";
 
 class CaptureConsumer {
   constructor(name, filter) {
@@ -134,4 +137,60 @@ test("TraceProducer maps pi hooks to realtime and batch trace events", () => {
     errorCount: 0,
     durationMs: 250,
   });
+});
+
+
+test("MarkdownTraceConsumer writes batch records as a markdown execution document", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-trace-md-"));
+  const outputPath = join(dir, "trace.md");
+
+  try {
+    const consumer = new MarkdownTraceConsumer({ outputPath });
+    const base = { kind: "batch", timestamp: 1, runId: "run-md" };
+
+    consumer.consume({
+      ...base,
+      id: "m1",
+      type: "message.record",
+      payload: { role: "user", content: "Run echo" },
+    });
+    consumer.consume({
+      ...base,
+      id: "m2",
+      type: "message.record",
+      payload: {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "Need to run bash." },
+          { type: "text", text: "I will run the command." },
+          { type: "toolCall", id: "tool-1", name: "bash", arguments: { command: "echo trace-ok" } },
+        ],
+      },
+    });
+    consumer.consume({
+      ...base,
+      id: "t1",
+      type: "tool.record",
+      payload: {
+        toolName: "bash",
+        toolCallId: "tool-1",
+        input: { command: "echo trace-ok" },
+        resultContent: [{ type: "text", text: "trace-ok" }],
+      },
+    });
+
+    const markdown = readFileSync(outputPath, "utf8");
+    assert.match(markdown, /^# Pi Trace/m);
+    assert.match(markdown, /^## User/m);
+    assert.match(markdown, /Run echo/);
+    assert.match(markdown, /^## Thinking/m);
+    assert.match(markdown, /Need to run bash\./);
+    assert.match(markdown, /^## Assistant/m);
+    assert.match(markdown, /I will run the command\./);
+    assert.match(markdown, /^## Tool Call/m);
+    assert.match(markdown, /echo trace-ok/);
+    assert.match(markdown, /trace-ok/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

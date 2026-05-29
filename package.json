@@ -10,9 +10,10 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test tests/*.test.mjs",
-    "test:e2e": "node --test e2e/*.e2e.mjs"
+    "test:e2e": "find e2e/consumers -name '*.e2e.mjs' -print0 | xargs -0 node --test"
   },
   "devDependencies": {
+    "@types/node": "^25.9.1",
     "typescript": "^5.9.3"
   }
 }

@@ -191,6 +191,7 @@ test("MarkdownTraceConsumer writes batch records as a markdown execution documen
     assert.match(markdown, /^## Tool Call: bash \(success\)$/m);
     assert.match(markdown, /```json\n\{"command":"echo trace-ok"\}\n```/);
     assert.match(markdown, /```text\ntrace-ok\n```/);
+    assert.doesNotMatch(markdown, /^## Turn/m);
     assert.equal((markdown.match(/^```/gm) ?? []).length, 4);
   } finally {
     rmSync(dir, { recursive: true, force: true });

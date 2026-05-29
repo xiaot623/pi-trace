@@ -30,9 +30,6 @@ export class MarkdownTraceConsumer implements TraceConsumer {
       case "tool.record":
         this.renderToolCall(event.payload);
         break;
-      case "turn.record":
-        this.renderTurn(event.payload);
-        break;
       case "agent.run":
         this.renderSummary(event.payload);
         break;
@@ -95,17 +92,6 @@ export class MarkdownTraceConsumer implements TraceConsumer {
       fencedCode("json", safeJson(payload.input ?? null)),
       "",
       fencedCode("text", renderContentAsPlainText(payload.resultContent)),
-      "",
-    );
-  }
-
-  private renderTurn(payload: Record<string, unknown>): void {
-    this.sections.push(
-      "## Turn",
-      "",
-      `Turn index: \`${String(payload.turnIndex ?? "unknown")}\``,
-      "",
-      `Duration: \`${String(payload.durationMs ?? 0)}ms\``,
       "",
     );
   }

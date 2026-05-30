@@ -9,8 +9,16 @@
 ```text
 e2e/
   helpers/
-    pi-runner.mjs
-  trace-default.e2e.mjs
+    pi-runner.mjs          # spawn 封装、prompts、formatFailure
+    setup.mjs              # 公共路径常量、enableAllConsumers、cleanupArtifacts、combineOutput
+  consumers/
+    console/
+      assertions.mjs       # console consumer 断言函数
+    markdown/
+      assertions.mjs       # markdown consumer 断言函数（含 findMarkdownFiles）
+    lark/
+      assertions.mjs       # lark consumer 断言函数（含 asset map 验证）
+  trace-default.e2e.mjs    # 骨架测试用例，调用各 consumer assertions
 ```
 
 E2E 使用默认开发配置路径，测试会显式写入启用所有 Consumer 的配置。覆盖单轮真实 pi run，以及同一次 `pi -p` 传入多条 message 触发的多轮 run。

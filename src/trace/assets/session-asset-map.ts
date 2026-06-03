@@ -18,6 +18,7 @@ export interface SessionAssetMapEntry {
       topicName?: string;
       messageThreadId?: number;
       topicCreated?: boolean;
+      topicClosed?: boolean;
     }>;
   };
 }
@@ -51,7 +52,7 @@ export function updateSessionAssetMap(
   }
 }
 
-function loadSessionAssetMap(assetMapPath: string): SessionAssetMap {
+export function loadSessionAssetMap(assetMapPath: string): SessionAssetMap {
   if (!existsSync(assetMapPath)) {
     return { sessions: {} };
   }

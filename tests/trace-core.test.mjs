@@ -430,6 +430,8 @@ test("TelegramTraceConsumer creates topics, updates temporary messages, and send
         if (method === "sendMessage") return { message_id: ++messageId };
         if (method === "editMessageText") return true;
         if (method === "deleteMessage") return true;
+        if (method === "closeForumTopic") return true;
+        if (method === "reopenForumTopic") return true;
         throw new Error(`unexpected method ${method}`);
       },
     });
@@ -503,7 +505,7 @@ test("TelegramTraceConsumer creates topics, updates temporary messages, and send
 
     assert.deepEqual(
       calls.filter((call) => call.method === "createForumTopic").map((call) => call.body.chat_id),
-      ["123", "-100456"],
+      ["-100456"],
     );
     assert.equal(calls.find((call) => call.method === "createForumTopic").body.name, "19700101_");
 
@@ -524,10 +526,177 @@ test("TelegramTraceConsumer creates topics, updates temporary messages, and send
     assert.match(runSummaries[0].body.text, /Tokens: 30 \| In: 10 \(cached 3\) \| Out: 20 \| Cost: \$0\.0123/);
     assert.match(runSummaries[0].body.text, /Turns: 1 \| Messages: 2 \| Tools: 1 \| Errors: 0 \| Duration: 1\.3s/);
 
+    const topicCloses = calls.filter((call) => call.method === "closeForumTopic");
+    assert.deepEqual(topicCloses.map((call) => call.body), [
+      { chat_id: "-100456", message_thread_id: 42 },
+    ]);
+
     const assetMap = JSON.parse(readFileSync(assetMapPath, "utf8"));
     assert.deepEqual(assetMap.sessions["sess-tg"].telegram.chats, [
-      { chatId: "123", topicName: "19700101_", topicCreated: false },
-      { chatId: "-100456", topicName: "19700101_", messageThreadId: 42, topicCreated: true },
+      { chatId: "123", topicCreated: false },
+      { chatId: "-100456", topicName: "19700101_", messageThreadId: 42, topicCreated: true, topicClosed: true },
+    ]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("TelegramTraceConsumer closes the previous topic before switching sessions", async () => {
+  const calls = [];
+  let threadId = 40;
+  let messageId = 200;
+  const consumer = new TelegramTraceConsumer({
+    botToken: "test-token",
+    chatIds: ["-100456"],
+    request: async (method, body) => {
+      calls.push({ method, body });
+      if (method === "createForumTopic") return { message_thread_id: ++threadId };
+      if (method === "sendMessage") return { message_id: ++messageId };
+      if (method === "deleteMessage") return true;
+      if (method === "closeForumTopic") return true;
+      throw new Error(`unexpected method ${method}`);
+    },
+  });
+  const base = { kind: "batch", timestamp: 1, runId: "run-tg" };
+
+  await consumer.consume({
+    ...base,
+    id: "m1",
+    type: "message.record",
+    payload: {
+      role: "assistant",
+      sessionId: "sess-one",
+      sessionName: "one",
+      content: [{ type: "text", text: "First session." }],
+    },
+  });
+
+  await consumer.consume({
+    ...base,
+    id: "m2",
+    type: "message.record",
+    payload: {
+      role: "assistant",
+      sessionId: "sess-two",
+      sessionName: "two",
+      content: [{ type: "text", text: "Second session." }],
+    },
+  });
+
+  const methodOrder = calls.map((call) => call.method);
+  assert.deepEqual(methodOrder, [
+    "createForumTopic",
+    "sendMessage",
+    "deleteMessage",
+    "closeForumTopic",
+    "createForumTopic",
+    "sendMessage",
+  ]);
+  assert.equal(calls[3].body.message_thread_id, 41);
+  assert.equal(calls[4].body.name, "19700101_");
+  assert.equal(calls[5].body.message_thread_id, 42);
+});
+
+test("TelegramTraceConsumer does not use topics for direct chats", async () => {
+  const calls = [];
+  let messageId = 250;
+  const consumer = new TelegramTraceConsumer({
+    botToken: "test-token",
+    chatIds: ["8798866909"],
+    request: async (method, body) => {
+      calls.push({ method, body });
+      if (method === "sendMessage") return { message_id: ++messageId };
+      if (method === "deleteMessage") return true;
+      throw new Error(`unexpected method ${method}`);
+    },
+  });
+  const base = { kind: "batch", timestamp: 1, runId: "run-tg" };
+
+  await consumer.consume({
+    ...base,
+    id: "m1",
+    type: "message.record",
+    payload: {
+      role: "assistant",
+      sessionId: "sess-direct",
+      sessionName: "direct",
+      content: [{ type: "text", text: "Direct chat message." }],
+    },
+  });
+
+  await consumer.consume({
+    ...base,
+    id: "run1",
+    type: "agent.run",
+    payload: {
+      stats: { turnCount: 1, messageCount: 1, toolCount: 0, errorCount: 0, durationMs: 10 },
+    },
+  });
+
+  assert.deepEqual(calls.map((call) => call.method), ["sendMessage", "sendMessage", "deleteMessage"]);
+  assert.ok(calls.every((call) => !["createForumTopic", "closeForumTopic", "reopenForumTopic"].includes(call.method)));
+  assert.ok(calls.every((call) => call.body.message_thread_id === undefined));
+});
+
+test("TelegramTraceConsumer reopens and reuses a closed topic when a session resumes", async () => {
+  const calls = [];
+  let messageId = 300;
+  const dir = mkdtempSync(join(tmpdir(), "pi-trace-telegram-resume-"));
+  const assetMapPath = join(dir, "pi-trace.assets.json");
+
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(assetMapPath, JSON.stringify({
+      sessions: {
+        "sess-resume": {
+          telegram: {
+            chats: [
+              {
+                chatId: "-100456",
+                topicName: "old-topic",
+                messageThreadId: 77,
+                topicCreated: true,
+                topicClosed: true,
+              },
+            ],
+          },
+        },
+      },
+    }, null, 2) + "\n", "utf8");
+
+    const consumer = new TelegramTraceConsumer({
+      botToken: "test-token",
+      chatIds: ["-100456"],
+      assetMapPath,
+      request: async (method, body) => {
+        calls.push({ method, body });
+        if (method === "reopenForumTopic") return true;
+        if (method === "sendMessage") return { message_id: ++messageId };
+        if (method === "closeForumTopic") return true;
+        throw new Error(`unexpected method ${method}`);
+      },
+    });
+    const base = { kind: "batch", timestamp: 1, runId: "run-tg" };
+
+    await consumer.consume({
+      ...base,
+      id: "m1",
+      type: "message.record",
+      payload: {
+        role: "assistant",
+        sessionId: "sess-resume",
+        sessionName: "resume",
+        content: [{ type: "text", text: "Back in the old topic." }],
+      },
+    });
+
+    assert.deepEqual(calls.map((call) => call.method), ["reopenForumTopic", "sendMessage"]);
+    assert.deepEqual(calls[0].body, { chat_id: "-100456", message_thread_id: 77 });
+    assert.equal(calls[1].body.message_thread_id, 77);
+
+    const assetMap = JSON.parse(readFileSync(assetMapPath, "utf8"));
+    assert.deepEqual(assetMap.sessions["sess-resume"].telegram.chats, [
+      { chatId: "-100456", topicName: "old-topic", messageThreadId: 77, topicCreated: true },
     ]);
   } finally {
     rmSync(dir, { recursive: true, force: true });

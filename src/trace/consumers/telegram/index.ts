@@ -1,4 +1,4 @@
-import { updateSessionAssetMap } from "../../assets/session-asset-map.js";
+import { loadSessionAssetMap, updateSessionAssetMap } from "../../assets/session-asset-map.js";
 import type { TraceConsumer, TraceEvent } from "../../core/types.js";
 import { safeJson } from "../../core/utils.js";
 import { buildTraceTitle, deriveTraceTitleSubject, sanitizeTraceFileName } from "../title.js";
@@ -19,6 +19,7 @@ interface ChatState {
   topicAttempted: boolean;
   topicName?: string;
   messageThreadId?: number;
+  topicClosed?: boolean;
   thinkingMessageIds: number[];
   assistantMessageIds: number[];
   toolMessageIds: number[];
@@ -83,7 +84,7 @@ export class TelegramTraceConsumer implements TraceConsumer {
 
   private async handleEvent(event: TraceEvent): Promise<void> {
     if (!this.botToken || this.chatIds.length === 0) return;
-    this.ensureInitialized(event);
+    await this.prepareSession(event);
 
     switch (event.type) {
       case "message.record":
@@ -101,6 +102,15 @@ export class TelegramTraceConsumer implements TraceConsumer {
     }
   }
 
+  private async prepareSession(event: TraceEvent): Promise<void> {
+    const incomingSessionId = stringValue(event.payload.sessionId);
+    if (this.initialized && incomingSessionId && this.sessionId && incomingSessionId !== this.sessionId) {
+      await this.closeCurrentSessionTopics();
+      this.resetState();
+    }
+    this.ensureInitialized(event);
+  }
+
   private ensureInitialized(event: TraceEvent): void {
     if (this.initialized) {
       this.captureMetadata(event.payload);
@@ -111,6 +121,7 @@ export class TelegramTraceConsumer implements TraceConsumer {
     this.timestamp = event.timestamp;
     this.runId = String(event.runId ?? event.payload.runId ?? "unknown");
     this.captureMetadata(event.payload);
+    this.restoreTelegramAssetMap();
   }
 
   private captureMetadata(payload: Record<string, unknown>): void {
@@ -173,6 +184,8 @@ export class TelegramTraceConsumer implements TraceConsumer {
     for (const chatId of this.chatIds) {
       await this.sendText(chatId, summary);
     }
+    await this.closeCurrentSessionTopics();
+    this.resetState();
   }
 
   private async broadcastTemporary(kind: TemporaryKind, text: string): Promise<void> {
@@ -230,7 +243,7 @@ export class TelegramTraceConsumer implements TraceConsumer {
       text,
       disable_web_page_preview: true,
     };
-    if (typeof state.messageThreadId === "number") {
+    if (isTopicEligibleChat(chatId) && typeof state.messageThreadId === "number") {
       body.message_thread_id = state.messageThreadId;
     }
 
@@ -269,8 +282,46 @@ export class TelegramTraceConsumer implements TraceConsumer {
     });
   }
 
+  private async closeCurrentSessionTopics(): Promise<void> {
+    for (const chatId of this.chatIds) {
+      await this.deleteTemporaryMessages(chatId);
+      await this.closeTopic(chatId);
+    }
+    this.updateTelegramAssetMap();
+  }
+
+  private async closeTopic(chatId: string): Promise<void> {
+    if (!isTopicEligibleChat(chatId)) return;
+
+    const state = this.getChatState(chatId);
+    if (typeof state.messageThreadId !== "number" || state.topicClosed) return;
+
+    const closed = await this.tryTelegram("closeForumTopic", {
+      chat_id: chatId,
+      message_thread_id: state.messageThreadId,
+    }, {
+      ignoreDescriptions: [
+        "forum topic not found",
+        "message thread not found",
+        "chat not found",
+        "topic is closed",
+        "topic closed",
+      ],
+      logPrefix: `topic close failed for chat ${chatId}`,
+    });
+    if (closed.ok) state.topicClosed = true;
+  }
+
   private async ensureTopic(chatId: string): Promise<void> {
     const state = this.getChatState(chatId);
+    if (!isTopicEligibleChat(chatId)) {
+      state.topicAttempted = true;
+      return;
+    }
+    if (typeof state.messageThreadId === "number") {
+      await this.reopenTopic(chatId);
+      return;
+    }
     if (state.topicAttempted) return;
 
     state.topicAttempted = true;
@@ -278,13 +329,40 @@ export class TelegramTraceConsumer implements TraceConsumer {
     const result = await this.tryTelegram("createForumTopic", {
       chat_id: chatId,
       name: state.topicName,
-    }, { logPrefix: `topic create failed for chat ${chatId}` });
+    }, {
+      logPrefix: `topic create failed for chat ${chatId}`,
+    });
 
     const threadId = messageThreadId(result.result);
     if (threadId) {
       state.messageThreadId = threadId;
     }
     this.updateTelegramAssetMap();
+  }
+
+  private async reopenTopic(chatId: string): Promise<void> {
+    if (!isTopicEligibleChat(chatId)) return;
+
+    const state = this.getChatState(chatId);
+    if (typeof state.messageThreadId !== "number" || !state.topicClosed) return;
+
+    const reopened = await this.tryTelegram("reopenForumTopic", {
+      chat_id: chatId,
+      message_thread_id: state.messageThreadId,
+    }, {
+      ignoreDescriptions: [
+        "forum topic not found",
+        "message thread not found",
+        "chat not found",
+        "topic is not closed",
+        "topic not closed",
+      ],
+      logPrefix: `topic reopen failed for chat ${chatId}`,
+    });
+    if (reopened.ok) {
+      state.topicClosed = false;
+      this.updateTelegramAssetMap();
+    }
   }
 
   private getChatState(chatId: string): ChatState {
@@ -378,10 +456,45 @@ export class TelegramTraceConsumer implements TraceConsumer {
             ...(state.topicName ? { topicName: state.topicName } : {}),
             ...(typeof state.messageThreadId === "number" ? { messageThreadId: state.messageThreadId } : {}),
             topicCreated: typeof state.messageThreadId === "number",
+            ...(state.topicClosed ? { topicClosed: true } : {}),
           };
         }),
       },
     });
+  }
+
+  private restoreTelegramAssetMap(): void {
+    if (!this.assetMapPath || !this.sessionId) return;
+
+    try {
+      const entry = loadSessionAssetMap(this.assetMapPath).sessions[this.sessionId];
+      for (const chat of entry?.telegram?.chats ?? []) {
+        if (!this.chatIds.includes(chat.chatId)) continue;
+        if (!isTopicEligibleChat(chat.chatId)) continue;
+        const state = this.getChatState(chat.chatId);
+        state.topicAttempted = Boolean(chat.topicCreated);
+        state.topicName = chat.topicName;
+        state.messageThreadId = typeof chat.messageThreadId === "number" ? chat.messageThreadId : undefined;
+        state.topicClosed = Boolean(chat.topicClosed);
+      }
+    } catch (error) {
+      console.warn(`[trace:telegram] failed to restore asset map ${this.assetMapPath}:`, error);
+    }
+  }
+
+  private resetState(): void {
+    this.chatStates.clear();
+    this.initialized = false;
+    this.timestamp = Date.now();
+    this.runId = "unknown";
+    this.sessionName = undefined;
+    this.sessionId = undefined;
+    this.modelId = undefined;
+    this.modelProvider = undefined;
+    this.cwd = undefined;
+    this.titleSubject = undefined;
+    this.lastAssistantText = "";
+    this.turnToolCount = 0;
   }
 
   private async tryTelegram(
@@ -393,7 +506,8 @@ export class TelegramTraceConsumer implements TraceConsumer {
       return { ok: true, result: await this.callTelegram(method, body) };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (options.ignoreDescriptions?.some((description) => message.toLowerCase().includes(description))) {
+      const normalizedMessage = message.toLowerCase();
+      if (options.ignoreDescriptions?.some((description) => normalizedMessage.includes(description.toLowerCase()))) {
         return { ok: true };
       }
       console.error(`[trace:telegram] ${options.logPrefix ?? `${method} failed`}`, error);
@@ -528,6 +642,10 @@ function messageThreadId(value: unknown): number | undefined {
   if (!value || typeof value !== "object") return undefined;
   const id = (value as TelegramTopicResult).message_thread_id;
   return typeof id === "number" ? id : undefined;
+}
+
+function isTopicEligibleChat(chatId: string): boolean {
+  return chatId.trim().startsWith("-");
 }
 
 function dedupe(values: string[]): string[] {

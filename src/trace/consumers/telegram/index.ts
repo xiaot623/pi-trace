@@ -20,7 +20,6 @@ interface ChatState {
   topicAttempted: boolean;
   topicName?: string;
   messageThreadId?: number;
-  topicClosed?: boolean;
   thinkingMessageIds: number[];
   toolMessageIds: number[];
   assistantMessageIds: number[];
@@ -125,7 +124,6 @@ export class TelegramTraceConsumer implements TraceConsumer {
   private async prepareSession(event: TraceEvent): Promise<void> {
     const incomingSessionId = stringValue(event.payload.sessionId);
     if (this.initialized && incomingSessionId && this.sessionId && incomingSessionId !== this.sessionId) {
-      await this.closeCurrentSessionTopics();
       this.resetState();
     }
     this.ensureInitialized(event);
@@ -204,7 +202,6 @@ export class TelegramTraceConsumer implements TraceConsumer {
       await this.deleteMessageIds(chatId, previousSummaryIds);
       await this.deleteProgressMessages(chatId, ["thinking", "tool"]);
     }
-    await this.closeCurrentSessionTopics();
     this.resetState();
   }
 
@@ -285,16 +282,6 @@ export class TelegramTraceConsumer implements TraceConsumer {
     return messageId(result.result);
   }
 
-  private clearTemporaryState(chatId: string): void {
-    const state = this.getChatState(chatId);
-    state.thinkingMessageIds = [];
-    state.toolMessageIds = [];
-    state.assistantMessageIds = [];
-    state.thinkingText = "";
-    state.assistantText = "";
-    state.toolLines = [];
-  }
-
   private async deleteProgressMessages(chatId: string, kinds: TelegramMessageKind[]): Promise<void> {
     const state = this.getChatState(chatId);
     const ids = kinds.flatMap((kind) => getProgressMessageIds(state, kind));
@@ -320,46 +307,13 @@ export class TelegramTraceConsumer implements TraceConsumer {
     }
   }
 
-  private async closeCurrentSessionTopics(): Promise<void> {
-    for (const chatId of this.chatIds) {
-      this.clearTemporaryState(chatId);
-      await this.closeTopic(chatId);
-    }
-    this.updateTelegramAssetMap();
-  }
-
-  private async closeTopic(chatId: string): Promise<void> {
-    if (!isTopicEligibleChat(chatId)) return;
-
-    const state = this.getChatState(chatId);
-    if (typeof state.messageThreadId !== "number" || state.topicClosed) return;
-
-    const closed = await this.tryTelegram("closeForumTopic", {
-      chat_id: chatId,
-      message_thread_id: state.messageThreadId,
-    }, {
-      ignoreDescriptions: [
-        "forum topic not found",
-        "message thread not found",
-        "chat not found",
-        "topic is closed",
-        "topic closed",
-      ],
-      logPrefix: `topic close failed for chat ${chatId}`,
-    });
-    if (closed.ok) state.topicClosed = true;
-  }
-
   private async ensureTopic(chatId: string): Promise<void> {
     const state = this.getChatState(chatId);
     if (!isTopicEligibleChat(chatId)) {
       state.topicAttempted = true;
       return;
     }
-    if (typeof state.messageThreadId === "number") {
-      await this.reopenTopic(chatId);
-      return;
-    }
+    if (typeof state.messageThreadId === "number") return;
     if (state.topicAttempted) return;
 
     state.topicAttempted = true;
@@ -376,31 +330,6 @@ export class TelegramTraceConsumer implements TraceConsumer {
       state.messageThreadId = threadId;
     }
     this.updateTelegramAssetMap();
-  }
-
-  private async reopenTopic(chatId: string): Promise<void> {
-    if (!isTopicEligibleChat(chatId)) return;
-
-    const state = this.getChatState(chatId);
-    if (typeof state.messageThreadId !== "number" || !state.topicClosed) return;
-
-    const reopened = await this.tryTelegram("reopenForumTopic", {
-      chat_id: chatId,
-      message_thread_id: state.messageThreadId,
-    }, {
-      ignoreDescriptions: [
-        "forum topic not found",
-        "message thread not found",
-        "chat not found",
-        "topic is not closed",
-        "topic not closed",
-      ],
-      logPrefix: `topic reopen failed for chat ${chatId}`,
-    });
-    if (reopened.ok) {
-      state.topicClosed = false;
-      this.updateTelegramAssetMap();
-    }
   }
 
   private getChatState(chatId: string): ChatState {
@@ -478,7 +407,7 @@ export class TelegramTraceConsumer implements TraceConsumer {
             ...(state.topicName ? { topicName: state.topicName } : {}),
             ...(typeof state.messageThreadId === "number" ? { messageThreadId: state.messageThreadId } : {}),
             topicCreated: typeof state.messageThreadId === "number",
-            ...(state.topicClosed ? { topicClosed: true } : {}),
+
             ...(state.summaryMessageIds.length > 0 ? { summaryMessageIds: state.summaryMessageIds } : {}),
           };
         }),
@@ -508,7 +437,7 @@ export class TelegramTraceConsumer implements TraceConsumer {
         state.topicAttempted = Boolean(chat.topicCreated);
         state.topicName = chat.topicName;
         state.messageThreadId = typeof chat.messageThreadId === "number" ? chat.messageThreadId : undefined;
-        state.topicClosed = Boolean(chat.topicClosed);
+
       }
     } catch (error) {
       logger.warn(`[trace:telegram] failed to restore asset map ${this.assetMapPath}:`, error);

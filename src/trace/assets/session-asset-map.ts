@@ -19,7 +19,6 @@ export interface SessionAssetMapEntry {
       topicName?: string;
       messageThreadId?: number;
       topicCreated?: boolean;
-      topicClosed?: boolean;
       summaryMessageIds?: number[];
     }>;
     totals?: {

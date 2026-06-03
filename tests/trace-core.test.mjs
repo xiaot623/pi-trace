@@ -869,7 +869,7 @@ test("TelegramTraceConsumer reopens and reuses a closed topic when a session res
   }
 });
 
-test("LarkTraceConsumer generates XML and calls lark-cli with correct arguments", async () => {
+test("LarkTraceConsumer generates Feishu markdown content and calls lark-cli with correct arguments", async () => {
   // Mock lark-cli executor
   const calls = [];
   const dir = mkdtempSync(join(tmpdir(), "pi-trace-lark-map-"));
@@ -913,13 +913,13 @@ test("LarkTraceConsumer generates XML and calls lark-cli with correct arguments"
     type: "message.record",
     payload: {
       role: "user",
-      content: "Run echo",
+      content: "Run `echo`",
       sessionId: "sess-123",
       sessionName: "test-session",
       modelId: "gpt-4",
       modelProvider: "openai",
       cwd: "/test/workspace",
-      userInput: "Run echo"
+      userInput: "Run `echo`"
     },
   });
 
@@ -930,7 +930,7 @@ test("LarkTraceConsumer generates XML and calls lark-cli with correct arguments"
     payload: {
       role: "assistant",
       content: [
-        { type: "text", text: "I will run the command." },
+        { type: "text", text: "I will run **the command**.\n\n- first\n- second" },
       ],
     },
   });
@@ -979,6 +979,8 @@ test("LarkTraceConsumer generates XML and calls lark-cli with correct arguments"
   assert.ok(calloutCall.args.includes("+update"));
   assert.ok(calloutCall.args.includes("--command"));
   assert.ok(calloutCall.args.includes("append"));
+  assert.ok(calloutCall.args.includes("--doc-format"));
+  assert.equal(calloutCall.args[calloutCall.args.indexOf("--doc-format") + 1], "markdown");
   assert.match(calloutCall.stdin, /<callout[^>]*>/);
   assert.match(calloutCall.stdin, /<b>Run ID:<\/b>.*run-lark/);
   assert.match(calloutCall.stdin, /<b>Session Name:<\/b>.*test-session/);
@@ -989,15 +991,16 @@ test("LarkTraceConsumer generates XML and calls lark-cli with correct arguments"
   assert.ok(appendCall.args.includes("+update"));
   assert.ok(appendCall.args.includes("--command"));
   assert.ok(appendCall.args.includes("append"));
+  assert.ok(appendCall.args.includes("--doc-format"));
+  assert.equal(appendCall.args[appendCall.args.indexOf("--doc-format") + 1], "markdown");
   assert.ok(appendCall.args.includes("--doc"));
   assert.ok(appendCall.args.includes("doxcn-test-123"));
-  assert.match(appendCall.stdin, /<h2>User<\/h2>/);
-  assert.match(appendCall.stdin, /Run echo/);
-  assert.match(appendCall.stdin, /<h2>Assistant<\/h2>/);
-  assert.match(appendCall.stdin, /I will run the command/);
-  assert.match(appendCall.stdin, /<h2>Tool Call: bash \(success\)<\/h2>/);
-  assert.match(appendCall.stdin, /<pre lang="json"><code>.*command.*echo test.*<\/code><\/pre>/);
-  assert.match(appendCall.stdin, /<pre lang="text"><code>test output<\/code><\/pre>/);
+  assert.match(appendCall.stdin, /^## User\n\nRun `echo`/m);
+  assert.match(appendCall.stdin, /^## Assistant\n\nI will run \*\*the command\*\*\./m);
+  assert.match(appendCall.stdin, /- first\n- second/);
+  assert.match(appendCall.stdin, /^## Tool Call: bash \(success\)$/m);
+  assert.match(appendCall.stdin, /```json\n\{"command":"echo test"\}\n```/);
+  assert.match(appendCall.stdin, /```text\ntest output\n```/);
 
   const assetMap = JSON.parse(readFileSync(assetMapPath, "utf8"));
   assert.deepEqual(assetMap.sessions["sess-123"].lark, {

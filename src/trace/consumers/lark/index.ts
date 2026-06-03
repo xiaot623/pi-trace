@@ -12,7 +12,7 @@ export interface LarkTraceConsumerOptions {
 
 /** Max chars per single lark-cli --content call. */
 const MAX_CHUNK_CHARS = 30000;
-/** Max chars per single <pre><code> block; longer text is split into multiple blocks. */
+/** Max chars per single fenced code block; longer text is split into multiple blocks. */
 const MAX_CODE_BLOCK_CHARS = 20000;
 
 export class LarkTraceConsumer implements TraceConsumer {
@@ -38,7 +38,7 @@ export class LarkTraceConsumer implements TraceConsumer {
   private input?: string;
   private hasUserMessage = false;
 
-  // Accumulated XML fragments for the current turn
+  // Accumulated markdown/XML fragments for the current turn
   private pendingSections: string[] = [];
   private initialized = false;
   private flushSeq = 0;
@@ -104,7 +104,7 @@ export class LarkTraceConsumer implements TraceConsumer {
     if (role === "user") {
       this.hasUserMessage = true;
       this.titleSubject ??= deriveTraceTitleSubject(payload);
-      this.pendingSections.push(`<h2>User</h2>`, contentToXml(content));
+      this.pendingSections.push(markdownSection("User", contentToMarkdown(content)));
       return;
     }
 
@@ -115,7 +115,7 @@ export class LarkTraceConsumer implements TraceConsumer {
 
   private renderAssistantContent(content: unknown): void {
     if (!Array.isArray(content)) {
-      this.pendingSections.push(`<h2>Assistant</h2>`, contentToXml(content));
+      this.pendingSections.push(markdownSection("Assistant", contentToMarkdown(content)));
       return;
     }
 
@@ -125,10 +125,10 @@ export class LarkTraceConsumer implements TraceConsumer {
       if (item.type === "thinking") {
         const thinking = String(item.thinking ?? "").trim();
         if (thinking) {
-          this.pendingSections.push(`<h2>Thinking</h2>`, contentToXml(thinking));
+          this.pendingSections.push(markdownSection("Thinking", contentToMarkdown(thinking)));
         }
       } else if (item.type === "text") {
-        this.pendingSections.push(`<h2>Assistant</h2>`, contentToXml(String(item.text ?? "")));
+        this.pendingSections.push(markdownSection("Assistant", contentToMarkdown(String(item.text ?? ""))));
       }
     }
   }
@@ -137,14 +137,18 @@ export class LarkTraceConsumer implements TraceConsumer {
     const toolName = String(payload.toolName ?? "unknown");
     const status = payload.isError ? "error" : "success";
 
-    this.pendingSections.push(`<h2>Tool Call: ${escapeXml(toolName)} (${status})</h2>`);
-    this.pendingSections.push(xmlCodeBlock("json", safeJson(payload.input ?? null)));
+    const blocks = [
+      `## Tool Call: ${toolName} (${status})`,
+      fencedCode("json", safeJson(payload.input ?? null)),
+    ];
 
-    // Split long tool results into multiple code blocks instead of truncating
+    // Split long tool results into multiple code blocks instead of truncating.
     const resultText = renderToolResultContent(payload.resultContent);
     for (const chunk of splitText(resultText, MAX_CODE_BLOCK_CHARS)) {
-      this.pendingSections.push(xmlCodeBlock("text", chunk));
+      blocks.push(fencedCode("text", chunk));
     }
+
+    this.pendingSections.push(blocks.join("\n\n"));
   }
 
   // --------------------------------------------------------------------------
@@ -159,7 +163,7 @@ export class LarkTraceConsumer implements TraceConsumer {
     this.titleSubject ??= deriveTraceTitleSubject(payload);
     // If no user message was captured, add input from run payload
     if (!this.hasUserMessage && typeof payload.userInput === "string" && (payload.userInput as string).trim()) {
-      this.pendingSections.push(`<h2>User</h2>`, contentToXml(payload.userInput as string));
+      this.pendingSections.push(markdownSection("User", contentToMarkdown(payload.userInput as string)));
     }
     // Append cost/token usage entry as highlight block (never remove previous entries in multi-turn)
     const stats = (payload.stats ?? {}) as Record<string, unknown>;
@@ -201,7 +205,7 @@ export class LarkTraceConsumer implements TraceConsumer {
   }
 
   // --------------------------------------------------------------------------
-  // Flush — build XML and call lark-cli
+  // Flush — build markdown/XML content and call lark-cli
   // --------------------------------------------------------------------------
 
   private async flush(): Promise<void> {
@@ -233,6 +237,7 @@ export class LarkTraceConsumer implements TraceConsumer {
           "--api-version", "v2",
           "--doc", this.documentToken!,
           "--command", "append",
+          "--doc-format", "markdown",
           "--content", "-",
         ], createXml);
       }
@@ -255,6 +260,7 @@ export class LarkTraceConsumer implements TraceConsumer {
         "--api-version", "v2",
         "--doc", this.documentToken!,
         "--command", "append",
+        "--doc-format", "markdown",
         "--content", "-",
       ], chunks[i]);
 
@@ -419,20 +425,15 @@ function escapeXml(text: string): string {
     .replace(/\n/g, "<br/>");
 }
 
-/** Wrap text in a <pre><code> block. */
-function xmlCodeBlock(language: string, value: string): string {
-  const escaped = escapeXml(value);
-  return `<pre lang="${language}"><code>${escaped}</code></pre>`;
+function markdownSection(title: string, body: string): string {
+  const normalized = body.trim();
+  return `## ${title}\n\n${normalized || "(empty)"}`;
 }
 
-/** Convert message content (string or block array) to XML paragraphs. */
-function contentToXml(content: unknown): string {
-  if (typeof content === "string") {
-    return `<p>${escapeXml(content)}</p>`;
-  }
-  if (!Array.isArray(content)) {
-    return `<p>${escapeXml(safeJson(content))}</p>`;
-  }
+/** Convert message content (string or block array) to Feishu markdown. */
+function contentToMarkdown(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return fencedCode("json", safeJson(content));
 
   const parts: string[] = [];
   for (const block of content) {
@@ -440,14 +441,14 @@ function contentToXml(content: unknown): string {
     const item = block as Record<string, unknown>;
     if (item.type === "text") {
       const text = String(item.text ?? "");
-      if (text.trim()) parts.push(`<p>${escapeXml(text)}</p>`);
+      if (text.trim()) parts.push(text);
     } else if (item.type === "image") {
-      parts.push(`<p>[image]</p>`);
+      parts.push("[image]");
     }
     // thinking blocks are handled separately in renderAssistantContent
   }
 
-  return parts.join("\n") || `<p>(empty)</p>`;
+  return parts.join("\n\n") || "(empty)";
 }
 
 /** Render tool result content to plain text. */
@@ -493,14 +494,14 @@ function packSectionsIntoChunks(sections: string[], maxChars: number): string[] 
   let current = "";
 
   for (const section of sections) {
-    const addition = current ? `\n${section}` : section;
+    const addition = current ? `\n\n${section}` : section;
 
     if (current.length + addition.length <= maxChars) {
       current += addition;
     } else {
       if (current) chunks.push(current);
 
-      // If a single section exceeds the limit, split it into sub-chunks
+      // If a single section exceeds the limit, split it into sub-chunks.
       if (section.length > maxChars) {
         const parts = splitText(section, maxChars);
         for (let i = 0; i < parts.length - 1; i++) {
@@ -515,6 +516,12 @@ function packSectionsIntoChunks(sections: string[], maxChars: number): string[] 
 
   if (current) chunks.push(current);
   return chunks;
+}
+
+function fencedCode(language: string, value: string): string {
+  const longestBacktickRun = Math.max(0, ...Array.from(value.matchAll(/`+/g), (match) => match[0].length));
+  const fence = "`".repeat(Math.max(3, longestBacktickRun + 1));
+  return `${fence}${language}\n${value}\n${fence}`;
 }
 
 function parseWikiNode(stdout: string): { title?: string; nodeToken?: string; objToken?: string; url?: string } {

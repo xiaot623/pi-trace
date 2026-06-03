@@ -1,4 +1,4 @@
-import type { ConsoleConfig, LarkConfig, MarkdownConfig } from "./types.js";
+import type { ConsoleConfig, LarkConfig, MarkdownConfig, TelegramConfig } from "./types.js";
 
 export const DEFAULT_CONSOLE_CONFIG: ConsoleConfig = {
   enabled: false,
@@ -14,8 +14,15 @@ export const DEFAULT_LARK_CONFIG: LarkConfig = {
   wiki_space_id: "",
 };
 
+export const DEFAULT_TELEGRAM_CONFIG: TelegramConfig = {
+  enabled: false,
+  botToken: "",
+  chatIds: [],
+};
+
 export const DEFAULT_CONFIG = {
   console: DEFAULT_CONSOLE_CONFIG,
   markdown: DEFAULT_MARKDOWN_CONFIG,
   lark: DEFAULT_LARK_CONFIG,
+  telegram: DEFAULT_TELEGRAM_CONFIG,
 } as const;

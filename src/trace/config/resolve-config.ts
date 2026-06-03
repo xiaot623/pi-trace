@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DEFAULT_CONFIG } from "./default-config.js";
-import type { ConsoleConfig, LarkConfig, MarkdownConfig, ResolveConfigOptions, TraceConfig, TraceUserConfig } from "./types.js";
+import type { ConsoleConfig, LarkConfig, MarkdownConfig, ResolveConfigOptions, TelegramConfig, TraceConfig, TraceUserConfig } from "./types.js";
 
 const CONFIG_FILE_NAME = "pi-trace.config.json";
 const ASSET_MAP_FILE_NAME = "pi-trace.assets.json";
@@ -22,7 +22,10 @@ export function resolveConfig(options: ResolveConfigOptions = {}): TraceConfig {
     DEFAULT_CONFIG,
     fileConfig?.consumers,
     options.config?.consumers,
-  ) as { console: ConsoleConfig; markdown: MarkdownConfig; lark: LarkConfig };
+  ) as { console: ConsoleConfig; markdown: MarkdownConfig; lark: LarkConfig; telegram: TelegramConfig };
+
+  const telegramToken = process.env.PI_TRACE_TELEGRAM_BOT_TOKEN?.trim() || merged.telegram.botToken;
+  const telegramChatIds = parseChatIds(process.env.PI_TRACE_TELEGRAM_CHAT_IDS) ?? merged.telegram.chatIds;
 
   return {
     assetDir,
@@ -37,6 +40,13 @@ export function resolveConfig(options: ResolveConfigOptions = {}): TraceConfig {
     lark: {
       enabled: merged.lark.enabled,
       wiki_space_id: merged.lark.wiki_space_id,
+    },
+    telegram: {
+      enabled: merged.telegram.enabled,
+      botToken: telegramToken,
+      chatIds: Array.isArray(telegramChatIds)
+        ? telegramChatIds.map((id) => typeof id === "string" ? id.trim() : "").filter(Boolean)
+        : [],
     },
   };
 }
@@ -79,6 +89,11 @@ function ensureDefaultConfigFile(configPath: string): void {
       enabled: DEFAULT_CONFIG.lark.enabled,
       wiki_space_id: DEFAULT_CONFIG.lark.wiki_space_id,
     },
+    telegram: {
+      enabled: DEFAULT_CONFIG.telegram.enabled,
+      botToken: DEFAULT_CONFIG.telegram.botToken,
+      chatIds: DEFAULT_CONFIG.telegram.chatIds,
+    },
   };
 
   try {
@@ -116,6 +131,14 @@ function ensureDefaultConfigFile(configPath: string): void {
   } catch {
     // Silently skip if directory is not writable (e.g. read-only filesystem)
   }
+}
+
+function parseChatIds(value: string | undefined): string[] | undefined {
+  if (!value) return undefined;
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function mergeConsumerConfigs(

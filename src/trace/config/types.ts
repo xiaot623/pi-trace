@@ -18,11 +18,18 @@ export interface LarkUserConfig {
   wiki_space_id?: string;
 }
 
+export interface TelegramUserConfig {
+  enabled?: boolean;
+  botToken?: string;
+  chatIds?: string[];
+}
+
 export interface TraceUserConfig {
   consumers?: {
     console?: ConsoleUserConfig;
     markdown?: MarkdownUserConfig;
     lark?: LarkUserConfig;
+    telegram?: TelegramUserConfig;
   };
 }
 
@@ -44,12 +51,19 @@ export interface LarkConfig {
   wiki_space_id: string;
 }
 
+export interface TelegramConfig {
+  enabled: boolean;
+  botToken: string;
+  chatIds: string[];
+}
+
 export interface TraceConfig {
   assetDir: string;
   assetMapPath: string;
   console: ConsoleConfig;
   markdown: MarkdownConfig;
   lark: LarkConfig;
+  telegram: TelegramConfig;
 }
 
 // ============================================================================

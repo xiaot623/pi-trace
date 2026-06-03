@@ -4,6 +4,7 @@ import { resolveConfig } from "./trace/config/resolve-config.js";
 import { ConsoleTraceConsumer } from "./trace/consumers/console/index.js";
 import { MarkdownTraceConsumer } from "./trace/consumers/markdown/index.js";
 import { LarkTraceConsumer } from "./trace/consumers/lark/index.js";
+import { TelegramTraceConsumer } from "./trace/consumers/telegram/index.js";
 import { TraceCore } from "./trace/core/trace-core.js";
 import { TraceProducer } from "./trace/producers/pi-hook-producer.js";
 export { resolveConfig } from "./trace/config/resolve-config.js";
@@ -14,6 +15,8 @@ export type {
   LarkUserConfig,
   MarkdownConfig,
   MarkdownUserConfig,
+  TelegramConfig,
+  TelegramUserConfig,
   TraceConfig,
   TraceUserConfig,
   ResolveConfigOptions,
@@ -21,6 +24,7 @@ export type {
 export { ConsoleTraceConsumer } from "./trace/consumers/console/index.js";
 export { MarkdownTraceConsumer } from "./trace/consumers/markdown/index.js";
 export { LarkTraceConsumer } from "./trace/consumers/lark/index.js";
+export { TelegramTraceConsumer } from "./trace/consumers/telegram/index.js";
 export { TraceCore, matchesTraceFilter } from "./trace/core/trace-core.js";
 export { TraceProducer } from "./trace/producers/pi-hook-producer.js";
 export type { TraceConsumer, TraceConsumerFilter, TraceEvent, TraceFilterKind, TraceKind } from "./trace/core/types.js";
@@ -45,6 +49,18 @@ export default function traceExtension(pi: ExtensionAPI): void {
       wikiSpaceId: config.lark.wiki_space_id,
       assetMapPath: config.assetMapPath,
     }));
+  }
+
+  if (config.telegram.enabled) {
+    if (!config.telegram.botToken || config.telegram.chatIds.length === 0) {
+      console.error("[trace:telegram] enabled but botToken or chatIds is missing");
+    } else {
+      core.registerConsumer(new TelegramTraceConsumer({
+        botToken: config.telegram.botToken,
+        chatIds: config.telegram.chatIds,
+        assetMapPath: config.assetMapPath,
+      }));
+    }
   }
 
   const producer = new TraceProducer(core);

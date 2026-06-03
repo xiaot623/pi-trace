@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { LarkTraceConsumer, MarkdownTraceConsumer, TraceCore, matchesTraceFilter, resolveConfig, TraceProducer } from "../dist/index.js";
+import { LarkTraceConsumer, MarkdownTraceConsumer, TelegramTraceConsumer, TraceCore, matchesTraceFilter, resolveConfig, TraceProducer } from "../dist/index.js";
 
 class CaptureConsumer {
   constructor(name, filter) {
@@ -214,6 +214,9 @@ test("resolveConfig uses a fixed asset directory and default consumer settings",
     assert.equal(defaults.markdown.enabled, false);
     assert.equal(defaults.lark.enabled, false);
     assert.equal(defaults.lark.wiki_space_id, "");
+    assert.equal(defaults.telegram.enabled, false);
+    assert.equal(defaults.telegram.botToken, "");
+    assert.deepEqual(defaults.telegram.chatIds, []);
 
     const overridden = resolveConfig({
       cwd: dir,
@@ -229,6 +232,7 @@ test("resolveConfig uses a fixed asset directory and default consumer settings",
     assert.deepEqual(overridden.console.filter, { kinds: ["realtime", "batch"] });
     assert.equal(overridden.markdown.enabled, true);
     assert.equal(overridden.lark.enabled, false);
+    assert.equal(overridden.telegram.enabled, false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -261,6 +265,7 @@ test("resolveConfig reads config file from dev_assets and merges with programmat
     assert.equal(fromFile.markdown.enabled, false);
     assert.equal(fromFile.lark.enabled, false);
     assert.equal(fromFile.lark.wiki_space_id, "");
+    assert.equal(fromFile.telegram.enabled, false);
 
     const overridden = resolveConfig({
       cwd: dir,
@@ -277,6 +282,7 @@ test("resolveConfig reads config file from dev_assets and merges with programmat
     assert.deepEqual(overridden.console.filter, { kinds: ["both"] });
     assert.equal(overridden.markdown.enabled, true);
     assert.equal(overridden.lark.enabled, false);
+    assert.equal(overridden.telegram.enabled, false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -322,6 +328,9 @@ test("resolveConfig creates a default config file on first use", () => {
     assert.equal(writtenConfig.consumers.markdown.enabled, false);
     assert.equal(writtenConfig.consumers.lark.enabled, false);
     assert.equal(writtenConfig.consumers.lark.wiki_space_id, "");
+    assert.equal(writtenConfig.consumers.telegram.enabled, false);
+    assert.equal(writtenConfig.consumers.telegram.botToken, "");
+    assert.deepEqual(writtenConfig.consumers.telegram.chatIds, []);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -358,6 +367,168 @@ test("resolveConfig merges lark config when enabled in config file", () => {
     });
     assert.equal(overridden.lark.enabled, true);
     assert.equal(overridden.lark.wiki_space_id, "override-space-789");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("resolveConfig merges telegram config and supports env token override", () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-trace-telegram-enabled-"));
+  const assetDir = join(dir, "dev_assets");
+  const configPath = join(assetDir, "pi-trace.config.json");
+  const previousToken = process.env.PI_TRACE_TELEGRAM_BOT_TOKEN;
+  const previousChatIds = process.env.PI_TRACE_TELEGRAM_CHAT_IDS;
+
+  try {
+    mkdirSync(assetDir, { recursive: true });
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        consumers: {
+          telegram: { enabled: true, botToken: "file-token", chatIds: ["1", "-1002"] },
+        },
+      }),
+      "utf8",
+    );
+
+    const fromFile = resolveConfig({ cwd: dir });
+    assert.equal(fromFile.telegram.enabled, true);
+    assert.equal(fromFile.telegram.botToken, "file-token");
+    assert.deepEqual(fromFile.telegram.chatIds, ["1", "-1002"]);
+
+    process.env.PI_TRACE_TELEGRAM_BOT_TOKEN = "env-token";
+    process.env.PI_TRACE_TELEGRAM_CHAT_IDS = "3, -1004";
+    const fromEnv = resolveConfig({ cwd: dir });
+    assert.equal(fromEnv.telegram.botToken, "env-token");
+    assert.deepEqual(fromEnv.telegram.chatIds, ["3", "-1004"]);
+  } finally {
+    if (previousToken === undefined) delete process.env.PI_TRACE_TELEGRAM_BOT_TOKEN;
+    else process.env.PI_TRACE_TELEGRAM_BOT_TOKEN = previousToken;
+    if (previousChatIds === undefined) delete process.env.PI_TRACE_TELEGRAM_CHAT_IDS;
+    else process.env.PI_TRACE_TELEGRAM_CHAT_IDS = previousChatIds;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("TelegramTraceConsumer creates topics, updates temporary messages, and sends summaries", async () => {
+  const calls = [];
+  let messageId = 100;
+  const dir = mkdtempSync(join(tmpdir(), "pi-trace-telegram-map-"));
+  const assetMapPath = join(dir, "pi-trace.assets.json");
+
+  try {
+    const consumer = new TelegramTraceConsumer({
+      botToken: "test-token",
+      chatIds: ["123", "-100456"],
+      assetMapPath,
+      request: async (method, body) => {
+        calls.push({ method, body });
+        if (method === "createForumTopic") {
+          if (body.chat_id === "123") throw new Error("Bad Request: chat not found");
+          return { message_thread_id: 42 };
+        }
+        if (method === "sendMessage") return { message_id: ++messageId };
+        if (method === "editMessageText") return true;
+        if (method === "deleteMessage") return true;
+        throw new Error(`unexpected method ${method}`);
+      },
+    });
+    const base = { kind: "batch", timestamp: 1, runId: "run-tg" };
+
+    await consumer.consume({
+      ...base,
+      id: "m1",
+      type: "message.record",
+      payload: {
+        role: "assistant",
+        sessionId: "sess-tg",
+        sessionName: "telegram-session",
+        modelId: "gpt-4",
+        modelProvider: "openai",
+        cwd: "/test/workspace",
+        content: [
+          { type: "thinking", thinking: "Need to answer." },
+          { type: "text", text: "First answer." },
+        ],
+      },
+    });
+
+    await consumer.consume({
+      ...base,
+      id: "m2",
+      type: "message.record",
+      payload: {
+        role: "assistant",
+        content: [{ type: "text", text: "Final answer for the turn." }],
+      },
+    });
+
+    await consumer.consume({
+      ...base,
+      id: "t1",
+      type: "tool.record",
+      payload: {
+        toolName: "bash",
+        input: { command: "echo ok" },
+        isError: false,
+      },
+    });
+
+    await consumer.consume({
+      ...base,
+      id: "turn1",
+      type: "turn.record",
+      payload: { turnIndex: 0 },
+    });
+
+    await consumer.consume({
+      ...base,
+      id: "run1",
+      type: "agent.run",
+      payload: {
+        stats: {
+          turnCount: 1,
+          messageCount: 2,
+          toolCount: 1,
+          errorCount: 0,
+          durationMs: 1250,
+          inputTokens: 10,
+          outputTokens: 20,
+          cacheReadTokens: 3,
+          totalTokens: 30,
+          cost: 0.01234,
+        },
+      },
+    });
+
+    assert.deepEqual(
+      calls.filter((call) => call.method === "createForumTopic").map((call) => call.body.chat_id),
+      ["123", "-100456"],
+    );
+    assert.equal(calls.find((call) => call.method === "createForumTopic").body.name, "19700101_");
+
+    const topicSend = calls.find((call) => call.method === "sendMessage" && call.body.chat_id === "-100456");
+    assert.equal(topicSend.body.message_thread_id, 42);
+
+    const edits = calls.filter((call) => call.method === "editMessageText");
+    assert.ok(edits.some((call) => call.body.text === "Final answer for the turn."));
+
+    const deletes = calls.filter((call) => call.method === "deleteMessage");
+    assert.equal(deletes.length, 6, "three temporary messages per chat should be deleted at turn end");
+
+    const stageSummaries = calls.filter((call) => call.method === "sendMessage" && call.body.text === "Final answer for the turn.");
+    assert.equal(stageSummaries.length, 2);
+
+    const runSummaries = calls.filter((call) => call.method === "sendMessage" && String(call.body.text).startsWith("Run Summary"));
+    assert.equal(runSummaries.length, 2);
+    assert.match(runSummaries[0].body.text, /Tokens: 30 \| In: 10 \(cached 3\) \| Out: 20 \| Cost: \$0\.0123/);
+    assert.match(runSummaries[0].body.text, /Turns: 1 \| Messages: 2 \| Tools: 1 \| Errors: 0 \| Duration: 1\.3s/);
+
+    const assetMap = JSON.parse(readFileSync(assetMapPath, "utf8"));
+    assert.deepEqual(assetMap.sessions["sess-tg"].telegram.chats, [
+      { chatId: "123", topicName: "19700101_", topicCreated: false },
+      { chatId: "-100456", topicName: "19700101_", messageThreadId: 42, topicCreated: true },
+    ]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

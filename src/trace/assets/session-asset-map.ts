@@ -12,6 +12,14 @@ export interface SessionAssetMapEntry {
     month?: string;
     monthNodeToken?: string;
   };
+  telegram?: {
+    chats: Array<{
+      chatId: string;
+      topicName?: string;
+      messageThreadId?: number;
+      topicCreated?: boolean;
+    }>;
+  };
 }
 
 export interface SessionAssetMap {
@@ -33,6 +41,7 @@ export function updateSessionAssetMap(
       ...assets,
       markdown: assets.markdown ?? current.markdown,
       lark: assets.lark ?? current.lark,
+      telegram: assets.telegram ?? current.telegram,
     };
 
     mkdirSync(dirname(assetMapPath), { recursive: true });

@@ -1,23 +1,21 @@
 import type { TraceConsumer, TraceConsumerFilter, TraceEvent } from "../../core/types.js";
 import { contentToPreview, oneLine } from "../../core/utils.js";
+import { logger } from "../../core/logger.js";
 
 export interface ConsoleTraceConsumerOptions {
   filter?: TraceConsumerFilter;
-  stream?: Pick<Console, "error" | "log">;
 }
 
 export class ConsoleTraceConsumer implements TraceConsumer {
   readonly name = "console";
   readonly filter?: TraceConsumerFilter;
-  private readonly stream: Pick<Console, "error" | "log">;
 
   constructor(options: ConsoleTraceConsumerOptions = {}) {
     this.filter = options.filter;
-    this.stream = options.stream ?? console;
   }
 
   consume(event: TraceEvent): void {
-    this.stream.error(this.format(event));
+    logger.info(this.format(event));
   }
 
   private format(event: TraceEvent): string {

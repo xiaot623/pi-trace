@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { updateSessionAssetMap } from "../../assets/session-asset-map.js";
 import type { TraceConsumer, TraceEvent } from "../../core/types.js";
 import { safeJson } from "../../core/utils.js";
+import { logger } from "../../core/logger.js";
 import { buildTraceTitle, deriveTraceTitleSubject, formatTraceMonth } from "../title.js";
 
 export interface LarkTraceConsumerOptions {
@@ -238,9 +239,9 @@ export class LarkTraceConsumer implements TraceConsumer {
 
       // Append turn content in chunks — never truncate
       this.appendInChunks(sections);
-      console.error(`[trace:lark] flush #${seq} ok${this.documentUrl ? ` → ${this.documentUrl}` : ""}`);
+      logger.info(`[trace:lark] flush #${seq} ok${this.documentUrl ? ` → ${this.documentUrl}` : ""}`);
     } catch (error) {
-      console.error(`[trace:lark] flush #${seq} failed`, error);
+      logger.error(`[trace:lark] flush #${seq} failed`, error);
     }
   }
 
@@ -258,7 +259,7 @@ export class LarkTraceConsumer implements TraceConsumer {
       ], chunks[i]);
 
       if (chunks.length > 1) {
-        console.error(`[trace:lark] appended chunk ${i + 1}/${chunks.length}`);
+        logger.info(`[trace:lark] appended chunk ${i + 1}/${chunks.length}`);
       }
     }
   }
@@ -289,7 +290,7 @@ export class LarkTraceConsumer implements TraceConsumer {
       throw new Error(`lark-cli did not return node_token for month document ${title}`);
     }
     this.monthNodeToken = created.nodeToken;
-    console.error(`[trace:lark] created month wiki node ${title} ${created.nodeToken}`);
+    logger.info(`[trace:lark] created month wiki node ${title} ${created.nodeToken}`);
     return created.nodeToken;
   }
 
@@ -373,7 +374,7 @@ export class LarkTraceConsumer implements TraceConsumer {
         this.documentToken = String(objToken);
         this.documentUrl = url;
         this.updateAssetMap();
-        console.error(`[trace:lark] created wiki node ${this.documentToken}`);
+        logger.info(`[trace:lark] created wiki node ${this.documentToken}`);
         return;
       }
       // docs +create response format (legacy)
@@ -382,12 +383,12 @@ export class LarkTraceConsumer implements TraceConsumer {
         this.documentToken = String(docId);
         this.documentUrl = json?.data?.document?.url;
         this.updateAssetMap();
-        console.error(`[trace:lark] created document ${this.documentToken}`);
+        logger.info(`[trace:lark] created document ${this.documentToken}`);
       } else {
-        console.error(`[trace:lark] no obj_token or document_id in response:`, stdout.slice(0, 200));
+        logger.error(`[trace:lark] no obj_token or document_id in response:`, stdout.slice(0, 200));
       }
     } catch {
-      console.error(`[trace:lark] failed to parse create response:`, stdout.slice(0, 200));
+      logger.error(`[trace:lark] failed to parse create response:`, stdout.slice(0, 200));
     }
   }
 

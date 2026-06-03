@@ -7,6 +7,7 @@ import { LarkTraceConsumer } from "./trace/consumers/lark/index.js";
 import { TelegramTraceConsumer } from "./trace/consumers/telegram/index.js";
 import { TraceCore } from "./trace/core/trace-core.js";
 import { TraceProducer } from "./trace/producers/pi-hook-producer.js";
+import { logger } from "./trace/core/logger.js";
 export { resolveConfig } from "./trace/config/resolve-config.js";
 export type {
   ConsoleConfig,
@@ -31,6 +32,7 @@ export type { TraceConsumer, TraceConsumerFilter, TraceEvent, TraceFilterKind, T
 
 export default function traceExtension(pi: ExtensionAPI): void {
   const config = resolveConfig();
+  logger.init(config.logDir);
   const core = new TraceCore();
 
   if (config.console.enabled) {
@@ -53,7 +55,7 @@ export default function traceExtension(pi: ExtensionAPI): void {
 
   if (config.telegram.enabled) {
     if (!config.telegram.botToken || config.telegram.chatIds.length === 0) {
-      console.error("[trace:telegram] enabled but botToken or chatIds is missing");
+      logger.error("[trace:telegram] enabled but botToken or chatIds is missing");
     } else {
       core.registerConsumer(new TelegramTraceConsumer({
         botToken: config.telegram.botToken,

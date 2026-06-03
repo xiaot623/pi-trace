@@ -60,6 +60,7 @@ export interface TelegramConfig {
 export interface TraceConfig {
   assetDir: string;
   assetMapPath: string;
+  logDir: string;
   console: ConsoleConfig;
   markdown: MarkdownConfig;
   lark: LarkConfig;

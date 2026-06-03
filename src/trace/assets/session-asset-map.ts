@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { logger } from "../core/logger.js";
 
 export interface SessionAssetMapEntry {
   markdown?: {
@@ -63,7 +64,7 @@ export function updateSessionAssetMap(
     mkdirSync(dirname(assetMapPath), { recursive: true });
     writeFileSync(assetMapPath, JSON.stringify(map, null, 2) + "\n", "utf8");
   } catch (error) {
-    console.warn(`[trace] Failed to update session asset map ${assetMapPath}:`, error);
+    logger.warn(`[trace] Failed to update session asset map ${assetMapPath}:`, error);
   }
 }
 

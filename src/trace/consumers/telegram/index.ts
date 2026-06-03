@@ -1,5 +1,6 @@
 import { loadSessionAssetMap, updateSessionAssetMap } from "../../assets/session-asset-map.js";
 import type { TraceConsumer, TraceEvent } from "../../core/types.js";
+import { logger } from "../../core/logger.js";
 import { safeJson } from "../../core/utils.js";
 import { buildTraceTitle, deriveTraceTitleSubject, sanitizeTraceFileName } from "../title.js";
 
@@ -93,7 +94,7 @@ export class TelegramTraceConsumer implements TraceConsumer {
     this.queue = this.queue
       .then(() => this.handleEvent(event))
       .catch((error: unknown) => {
-        console.error("[trace:telegram] event handling failed", error);
+        logger.error("[trace:telegram] event handling failed", error);
       });
     return this.queue;
   }
@@ -512,7 +513,7 @@ export class TelegramTraceConsumer implements TraceConsumer {
         state.topicClosed = Boolean(chat.topicClosed);
       }
     } catch (error) {
-      console.warn(`[trace:telegram] failed to restore asset map ${this.assetMapPath}:`, error);
+      logger.warn(`[trace:telegram] failed to restore asset map ${this.assetMapPath}:`, error);
     }
   }
 
@@ -544,7 +545,7 @@ export class TelegramTraceConsumer implements TraceConsumer {
       if (options.ignoreDescriptions?.some((description) => normalizedMessage.includes(description.toLowerCase()))) {
         return { ok: true };
       }
-      console.error(`[trace:telegram] ${options.logPrefix ?? `${method} failed`}`, error);
+      logger.error(`[trace:telegram] ${options.logPrefix ?? `${method} failed`}`, error);
       return { ok: false };
     }
   }

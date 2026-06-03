@@ -1,4 +1,5 @@
 import type { TraceConsumer, TraceConsumerFilter, TraceEvent, TraceKind } from "./types.js";
+import { logger } from "./logger.js";
 
 export function matchesTraceFilter(kind: TraceKind, filter?: TraceConsumerFilter): boolean {
   if (!filter?.kinds || filter.kinds.length === 0) return true;
@@ -18,11 +19,11 @@ export class TraceCore {
       try {
         void Promise.resolve(consumer.consume(event)).catch((error: unknown) => {
           // Consumers must not break pi's hook chain.
-          console.error(`[trace] consumer ${consumer.name} failed`, error);
+          logger.error(`[trace] consumer ${consumer.name} failed`, error);
         });
       } catch (error) {
         // Consumers must not break pi's hook chain.
-        console.error(`[trace] consumer ${consumer.name} failed`, error);
+        logger.error(`[trace] consumer ${consumer.name} failed`, error);
       }
     }
   }

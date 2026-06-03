@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DEFAULT_CONFIG } from "./default-config.js";
 import type { ConsoleConfig, LarkConfig, MarkdownConfig, ResolveConfigOptions, TelegramConfig, TraceConfig, TraceUserConfig } from "./types.js";
+import { logger } from "../core/logger.js";
 
 const CONFIG_FILE_NAME = "pi-trace.config.json";
 const ASSET_MAP_FILE_NAME = "pi-trace.assets.json";
@@ -30,6 +31,7 @@ export function resolveConfig(options: ResolveConfigOptions = {}): TraceConfig {
   return {
     assetDir,
     assetMapPath: join(dirname(configPath), ASSET_MAP_FILE_NAME),
+    logDir: join(dirname(configPath), "logs"),
     console: {
       enabled: merged.console.enabled,
       filter: merged.console.filter,
@@ -71,7 +73,7 @@ function loadConfigFile(configPath: string): TraceUserConfig | undefined {
     const content = readFileSync(configPath, "utf8");
     return JSON.parse(content) as TraceUserConfig;
   } catch (error) {
-    console.warn(`[trace] Failed to load config from ${configPath}:`, error);
+    logger.warn(`[trace] Failed to load config from ${configPath}:`, error);
     return undefined;
   }
 }

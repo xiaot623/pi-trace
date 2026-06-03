@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { repoRoot } from "./pi-runner.mjs";
 
@@ -8,25 +8,29 @@ export const configPath = join(repoRoot, "dev_assets", "pi-trace.config.json");
 export const assetMapPath = join(repoRoot, "dev_assets", "pi-trace.assets.json");
 
 /**
- * 写入启用全部 consumer 的配置文件。
+ * 从 dev_assets/pi-trace.config.json 读取消费者配置。
+ * 如果文件不存在则返回所有 consumer 默认关闭的空配置。
+ * @returns {{ consumers: Record<string, { enabled?: boolean }> }}
  */
-export function enableAllConsumers() {
-  mkdirSync(assetDir, { recursive: true });
-  writeFileSync(
-    configPath,
-    JSON.stringify(
-      {
-        consumers: {
-          console: { enabled: true, filter: { kinds: ["both"] } },
-          markdown: { enabled: true },
-          lark: { enabled: true, wiki_space_id: process.env.WIKI_SPACE_ID ?? "" },
-        },
-      },
-      null,
-      2,
-    ) + "\n",
-    "utf8",
-  );
+export function readConfig() {
+  if (!existsSync(configPath)) {
+    return { consumers: {} };
+  }
+  try {
+    return JSON.parse(readFileSync(configPath, "utf8"));
+  } catch {
+    return { consumers: {} };
+  }
+}
+
+/**
+ * 判断指定 consumer 是否启用。
+ * @param {{ consumers: Record<string, { enabled?: boolean }> }} config
+ * @param {string} name - consumer 名称（console / markdown / lark / telegram）
+ * @returns {boolean}
+ */
+export function isConsumerEnabled(config, name) {
+  return !!config?.consumers?.[name]?.enabled;
 }
 
 /**

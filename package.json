@@ -2,7 +2,7 @@
   "name": "pi-trace",
   "version": "0.0.0",
   "type": "module",
-  "description": "Trace core extension for pi lifecycle events — captures agent runs, turns, messages, and tool calls; routes to console, Markdown files, Lark wiki, or Telegram.",
+  "description": "Captures agent running information",
   "keywords": [
     "pi-package"
   ],
@@ -17,7 +17,11 @@
     "prepublishOnly": "npm run build",
     "dev": "pi -e src/index.ts",
     "test": "npm run build && node --test tests/*.test.mjs",
-    "test:qa": "node --test e2e/*.e2e.mjs"
+    "test:qa": "node --test e2e/*.e2e.mjs",
+    "pre_release": "npm version prerelease --preid=rc -m \"chore: pre-release v%s\" && git push origin HEAD --follow-tags",
+    "release:patch": "node scripts/release.js patch",
+    "release:minor": "node scripts/release.js minor",
+    "release:major": "node scripts/release.js major"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"

@@ -19,7 +19,22 @@ export interface SessionAssetMapEntry {
       messageThreadId?: number;
       topicCreated?: boolean;
       topicClosed?: boolean;
+      summaryMessageIds?: number[];
     }>;
+    totals?: {
+      loops?: number;
+      turnCount?: number;
+      messageCount?: number;
+      toolCount?: number;
+      errorCount?: number;
+      durationMs?: number;
+      inputTokens?: number;
+      outputTokens?: number;
+      cacheReadTokens?: number;
+      cacheWriteTokens?: number;
+      totalTokens?: number;
+      cost?: number;
+    };
   };
 }
 

@@ -427,7 +427,11 @@ test("TelegramTraceConsumer creates topics, updates temporary messages, and send
           if (body.chat_id === "123") throw new Error("Bad Request: chat not found");
           return { message_thread_id: 42 };
         }
-        if (method === "sendMessage") return { message_id: ++messageId };
+        if (method === "sendMessage") {
+          const result = { message_id: ++messageId };
+          calls.at(-1).resultMessageId = result.message_id;
+          return result;
+        }
         if (method === "editMessageText") return true;
         if (method === "deleteMessage") return true;
         if (method === "closeForumTopic") return true;
@@ -513,18 +517,28 @@ test("TelegramTraceConsumer creates topics, updates temporary messages, and send
     assert.equal(topicSend.body.message_thread_id, 42);
 
     const edits = calls.filter((call) => call.method === "editMessageText");
-    assert.ok(edits.some((call) => call.body.text === "Final answer for the turn."));
+    assert.ok(edits.some((call) => call.body.text === "🤖 <b>Assistant</b>\n\nFinal answer for the turn."));
+    assert.ok(edits.every((call) => call.body.parse_mode === "HTML"));
 
     const deletes = calls.filter((call) => call.method === "deleteMessage");
-    assert.equal(deletes.length, 6, "three temporary messages per chat should be deleted at turn end");
+    assert.equal(deletes.length, 4, "thinking and tool messages should be deleted after run summary");
 
-    const stageSummaries = calls.filter((call) => call.method === "sendMessage" && call.body.text === "Final answer for the turn.");
-    assert.equal(stageSummaries.length, 2);
+    const sendMessages = calls.filter((call) => call.method === "sendMessage");
+    assert.ok(sendMessages.every((call) => call.body.parse_mode === "HTML"));
+    assert.equal(sendMessages.filter((call) => !String(call.body.text).startsWith("📊 <b>Run Summary</b>")).length, 6);
+    assert.ok(sendMessages.some((call) => String(call.body.text).startsWith("💭 <b>Thinking</b>")));
+    assert.ok(sendMessages.some((call) => String(call.body.text).startsWith("🛠 <b>Tool Call</b>") && String(call.body.text).includes("[bash] echo ok")));
+    assert.ok(sendMessages.some((call) => String(call.body.text).startsWith("🤖 <b>Assistant</b>")));
+    const assistantMessageIds = sendMessages
+      .filter((call) => String(call.body.text).startsWith("🤖 <b>Assistant</b>"))
+      .map((call) => call.resultMessageId)
+      .filter(Boolean);
+    assert.ok(deletes.every((call) => !assistantMessageIds.includes(call.body.message_id)));
 
-    const runSummaries = calls.filter((call) => call.method === "sendMessage" && String(call.body.text).startsWith("Run Summary"));
+    const runSummaries = calls.filter((call) => call.method === "sendMessage" && String(call.body.text).startsWith("📊 <b>Run Summary</b>"));
     assert.equal(runSummaries.length, 2);
     assert.match(runSummaries[0].body.text, /Tokens: 30 \| In: 10 \(cached 3\) \| Out: 20 \| Cost: \$0\.0123/);
-    assert.match(runSummaries[0].body.text, /Turns: 1 \| Messages: 2 \| Tools: 1 \| Errors: 0 \| Duration: 1\.3s/);
+    assert.match(runSummaries[0].body.text, /Turns: 1 \| Loops: 1 \| Messages: 2 \| Tools: 1 \| Errors: 0 \| Duration: 1\.3s/);
 
     const topicCloses = calls.filter((call) => call.method === "closeForumTopic");
     assert.deepEqual(topicCloses.map((call) => call.body), [
@@ -533,9 +547,23 @@ test("TelegramTraceConsumer creates topics, updates temporary messages, and send
 
     const assetMap = JSON.parse(readFileSync(assetMapPath, "utf8"));
     assert.deepEqual(assetMap.sessions["sess-tg"].telegram.chats, [
-      { chatId: "123", topicCreated: false },
-      { chatId: "-100456", topicName: "19700101_", messageThreadId: 42, topicCreated: true, topicClosed: true },
+      { chatId: "123", topicCreated: false, summaryMessageIds: [107] },
+      { chatId: "-100456", topicName: "19700101_", messageThreadId: 42, topicCreated: true, topicClosed: true, summaryMessageIds: [108] },
     ]);
+    assert.deepEqual(assetMap.sessions["sess-tg"].telegram.totals, {
+      loops: 1,
+      turnCount: 1,
+      messageCount: 2,
+      toolCount: 1,
+      errorCount: 0,
+      durationMs: 1250,
+      inputTokens: 10,
+      outputTokens: 20,
+      cacheReadTokens: 3,
+      cacheWriteTokens: 0,
+      totalTokens: 30,
+      cost: 0.01234,
+    });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -552,7 +580,6 @@ test("TelegramTraceConsumer closes the previous topic before switching sessions"
       calls.push({ method, body });
       if (method === "createForumTopic") return { message_thread_id: ++threadId };
       if (method === "sendMessage") return { message_id: ++messageId };
-      if (method === "deleteMessage") return true;
       if (method === "closeForumTopic") return true;
       throw new Error(`unexpected method ${method}`);
     },
@@ -587,14 +614,13 @@ test("TelegramTraceConsumer closes the previous topic before switching sessions"
   assert.deepEqual(methodOrder, [
     "createForumTopic",
     "sendMessage",
-    "deleteMessage",
     "closeForumTopic",
     "createForumTopic",
     "sendMessage",
   ]);
-  assert.equal(calls[3].body.message_thread_id, 41);
-  assert.equal(calls[4].body.name, "19700101_");
-  assert.equal(calls[5].body.message_thread_id, 42);
+  assert.equal(calls[2].body.message_thread_id, 41);
+  assert.equal(calls[3].body.name, "19700101_");
+  assert.equal(calls[4].body.message_thread_id, 42);
 });
 
 test("TelegramTraceConsumer does not use topics for direct chats", async () => {
@@ -606,7 +632,7 @@ test("TelegramTraceConsumer does not use topics for direct chats", async () => {
     request: async (method, body) => {
       calls.push({ method, body });
       if (method === "sendMessage") return { message_id: ++messageId };
-      if (method === "deleteMessage") return true;
+      if (method === "editMessageText") return true;
       throw new Error(`unexpected method ${method}`);
     },
   });
@@ -633,9 +659,149 @@ test("TelegramTraceConsumer does not use topics for direct chats", async () => {
     },
   });
 
-  assert.deepEqual(calls.map((call) => call.method), ["sendMessage", "sendMessage", "deleteMessage"]);
+  assert.deepEqual(calls.map((call) => call.method), ["sendMessage", "editMessageText", "sendMessage"]);
   assert.ok(calls.every((call) => !["createForumTopic", "closeForumTopic", "reopenForumTopic"].includes(call.method)));
   assert.ok(calls.every((call) => call.body.message_thread_id === undefined));
+  assert.ok(calls.every((call) => call.body.parse_mode === "HTML"));
+});
+
+test("TelegramTraceConsumer reports session loop count from completed agent runs", async () => {
+  const calls = [];
+  let messageId = 275;
+  const consumer = new TelegramTraceConsumer({
+    botToken: "test-token",
+    chatIds: ["8798866909"],
+    request: async (method, body) => {
+      calls.push({ method, body });
+      if (method === "sendMessage") return { message_id: ++messageId };
+      if (method === "editMessageText") return true;
+      throw new Error(`unexpected method ${method}`);
+    },
+  });
+  const base = { kind: "batch", timestamp: 1, runId: "run-tg" };
+
+  for (const text of ["First loop.", "Second loop."]) {
+    await consumer.consume({
+      ...base,
+      id: `m-${text}`,
+      type: "message.record",
+      payload: {
+        role: "assistant",
+        sessionId: "sess-loop",
+        sessionName: "loop-session",
+        content: [{ type: "text", text }],
+      },
+    });
+
+    await consumer.consume({
+      ...base,
+      id: `run-${text}`,
+      type: "agent.run",
+      payload: {
+        stats: { turnCount: 3, messageCount: 1, toolCount: 0, errorCount: 0, durationMs: 10 },
+      },
+    });
+  }
+
+  const summaries = calls
+    .filter((call) => call.method === "sendMessage" && String(call.body.text).startsWith("📊 <b>Run Summary</b>"))
+    .map((call) => call.body.text);
+
+  assert.match(summaries[0], /Turns: 3 \| Loops: 1 \| Messages: 1/);
+  assert.match(summaries[1], /Turns: 6 \| Loops: 2 \| Messages: 2/);
+});
+
+test("TelegramTraceConsumer restores cumulative totals from asset map", async () => {
+  const calls = [];
+  let messageId = 290;
+  const dir = mkdtempSync(join(tmpdir(), "pi-trace-telegram-totals-"));
+  const assetMapPath = join(dir, "pi-trace.assets.json");
+
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(assetMapPath, JSON.stringify({
+      sessions: {
+        "sess-totals": {
+          telegram: {
+            chats: [{ chatId: "8798866909", topicCreated: false, summaryMessageIds: [288] }],
+            totals: {
+              loops: 2,
+              turnCount: 5,
+              messageCount: 8,
+              toolCount: 3,
+              errorCount: 1,
+              durationMs: 1000,
+              inputTokens: 100,
+              outputTokens: 50,
+              cacheReadTokens: 20,
+              cacheWriteTokens: 0,
+              totalTokens: 150,
+              cost: 0.01,
+            },
+          },
+        },
+      },
+    }, null, 2) + "\n", "utf8");
+
+    const consumer = new TelegramTraceConsumer({
+      botToken: "test-token",
+      chatIds: ["8798866909"],
+      assetMapPath,
+      request: async (method, body) => {
+        calls.push({ method, body });
+        if (method === "sendMessage") return { message_id: ++messageId };
+        if (method === "editMessageText") return true;
+        if (method === "deleteMessage") return true;
+        throw new Error(`unexpected method ${method}`);
+      },
+    });
+    const base = { kind: "batch", timestamp: 1, runId: "run-tg" };
+
+    await consumer.consume({
+      ...base,
+      id: "m-total",
+      type: "message.record",
+      payload: {
+        role: "assistant",
+        sessionId: "sess-totals",
+        sessionName: "totals",
+        content: [{ type: "text", text: "Restored totals." }],
+      },
+    });
+
+    await consumer.consume({
+      ...base,
+      id: "run-total",
+      type: "agent.run",
+      payload: {
+        stats: {
+          turnCount: 2,
+          messageCount: 3,
+          toolCount: 4,
+          errorCount: 0,
+          durationMs: 500,
+          inputTokens: 10,
+          outputTokens: 5,
+          cacheReadTokens: 2,
+          totalTokens: 15,
+          cost: 0.001,
+        },
+      },
+    });
+
+    const summary = calls.find((call) => call.method === "sendMessage" && String(call.body.text).startsWith("📊 <b>Run Summary</b>")).body.text;
+    assert.match(summary, /Tokens: 165 \| In: 110 \(cached 22\) \| Out: 55 \| Cost: \$0\.0110/);
+    assert.match(summary, /Turns: 7 \| Loops: 3 \| Messages: 11 \| Tools: 7 \| Errors: 1 \| Duration: 1\.5s/);
+
+    const assetMap = JSON.parse(readFileSync(assetMapPath, "utf8"));
+    assert.equal(assetMap.sessions["sess-totals"].telegram.totals.loops, 3);
+    assert.equal(assetMap.sessions["sess-totals"].telegram.totals.turnCount, 7);
+    assert.equal(assetMap.sessions["sess-totals"].telegram.totals.totalTokens, 165);
+    assert.ok(calls.some((call) => call.method === "deleteMessage" && call.body.message_id === 288));
+    assert.deepEqual(assetMap.sessions["sess-totals"].telegram.chats[0].summaryMessageIds, [292]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("TelegramTraceConsumer reopens and reuses a closed topic when a session resumes", async () => {

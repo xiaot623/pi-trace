@@ -13,7 +13,7 @@ export interface TelegramTraceConsumerOptions {
 
 export type TelegramRequest = (method: string, body: Record<string, unknown>) => Promise<unknown>;
 
-type TemporaryKind = "thinking" | "assistant" | "tool";
+type TelegramMessageKind = "thinking" | "tool" | "assistant" | "summary";
 
 interface ChatState {
   topicAttempted: boolean;
@@ -21,8 +21,11 @@ interface ChatState {
   messageThreadId?: number;
   topicClosed?: boolean;
   thinkingMessageIds: number[];
-  assistantMessageIds: number[];
   toolMessageIds: number[];
+  assistantMessageIds: number[];
+  summaryMessageIds: number[];
+  thinkingText: string;
+  assistantText: string;
   toolLines: string[];
 }
 
@@ -34,8 +37,24 @@ interface TelegramTopicResult {
   message_thread_id?: number;
 }
 
+interface TelegramTotals {
+  loops: number;
+  turnCount: number;
+  messageCount: number;
+  toolCount: number;
+  errorCount: number;
+  durationMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
+  cost: number;
+}
+
 const MAX_MESSAGE_CHARS = 3900;
 const MAX_TOOL_TEMP_CHARS = 3600;
+const MAX_TOOL_LINE_CHARS = 220;
 
 export class TelegramTraceConsumer implements TraceConsumer {
   readonly name = "telegram";
@@ -59,7 +78,8 @@ export class TelegramTraceConsumer implements TraceConsumer {
   private cwd?: string;
   private titleSubject?: string;
   private lastAssistantText = "";
-  private turnToolCount = 0;
+  private totals: TelegramTotals = createEmptyTotals();
+  private readonly totalsByKey = new Map<string, TelegramTotals>();
 
   constructor(options: TelegramTraceConsumerOptions) {
     this.botToken = options.botToken;
@@ -94,7 +114,6 @@ export class TelegramTraceConsumer implements TraceConsumer {
         await this.handleToolRecord(event.payload);
         break;
       case "turn.record":
-        await this.handleTurnRecord();
         break;
       case "agent.run":
         await this.handleAgentRun(event.payload);
@@ -139,65 +158,67 @@ export class TelegramTraceConsumer implements TraceConsumer {
 
     const { thinking, text } = extractAssistantContent(payload.content);
     if (thinking) {
-      await this.broadcastTemporary("thinking", `Thinking\n\n${thinking}`);
+      await this.broadcastProgress("thinking", (state) => {
+        state.thinkingText = thinking;
+      });
     }
     if (text) {
       this.lastAssistantText = text;
-      await this.broadcastTemporary("assistant", text);
+      await this.broadcastProgress("assistant", (state) => {
+        state.assistantText = text;
+      });
     }
   }
 
   private async handleToolRecord(payload: Record<string, unknown>): Promise<void> {
-    this.turnToolCount += 1;
     const toolName = String(payload.toolName ?? "unknown");
-    const input = renderReadableText(payload.input ?? null);
+    const input = renderToolInput(payload.input ?? null);
     const status = payload.isError ? " error" : "";
-    const line = `[${toolName}${status}] ${input}`;
+    const line = oneLine(`[${toolName}${status}] ${input}`, MAX_TOOL_LINE_CHARS);
 
-    for (const chatId of this.chatIds) {
-      const state = this.getChatState(chatId);
+    await this.broadcastProgress("tool", (state) => {
       state.toolLines.push(line);
-      let text = state.toolLines.join("\n");
-      if (text.length > MAX_TOOL_TEMP_CHARS) {
+      if (state.toolLines.join("\n").length > MAX_TOOL_TEMP_CHARS) {
         state.toolLines = [line];
-        text = line;
       }
-      await this.updateTemporary(chatId, "tool", text);
-    }
-  }
-
-  private async handleTurnRecord(): Promise<void> {
-    for (const chatId of this.chatIds) {
-      await this.deleteTemporaryMessages(chatId);
-      if (this.lastAssistantText.trim()) {
-        await this.sendText(chatId, this.lastAssistantText);
-      }
-    }
-
-    this.lastAssistantText = "";
-    this.turnToolCount = 0;
+    });
   }
 
   private async handleAgentRun(payload: Record<string, unknown>): Promise<void> {
     this.captureMetadata(payload);
+    this.totals = accumulateTotals(this.totals, (payload.stats ?? {}) as Record<string, unknown>);
+    this.updateTelegramAssetMap();
+    for (const chatId of this.chatIds) {
+      if (this.lastAssistantText.trim()) {
+        await this.updateProgress(chatId, "assistant", true);
+      }
+    }
+
     const summary = this.formatRunSummary(payload);
     for (const chatId of this.chatIds) {
-      await this.sendText(chatId, summary);
+      const previousSummaryIds = [...this.getChatState(chatId).summaryMessageIds];
+      const summaryIds = await this.sendText(chatId, "summary", summary);
+      this.getChatState(chatId).summaryMessageIds = summaryIds;
+      this.updateTelegramAssetMap();
+      await this.deleteMessageIds(chatId, previousSummaryIds);
+      await this.deleteProgressMessages(chatId, ["thinking", "tool"]);
     }
     await this.closeCurrentSessionTopics();
     this.resetState();
   }
 
-  private async broadcastTemporary(kind: TemporaryKind, text: string): Promise<void> {
+  private async broadcastProgress(kind: TelegramMessageKind, update: (state: ChatState) => void): Promise<void> {
     for (const chatId of this.chatIds) {
-      await this.updateTemporary(chatId, kind, text);
+      update(this.getChatState(chatId));
+      await this.updateProgress(chatId, kind, false);
     }
   }
 
-  private async updateTemporary(chatId: string, kind: TemporaryKind, text: string): Promise<void> {
+  private async updateProgress(chatId: string, kind: TelegramMessageKind, final: boolean): Promise<void> {
     const state = this.getChatState(chatId);
-    const previousIds = this.getTemporaryMessageIds(state, kind);
-    const chunks = splitTelegramText(text);
+    const previousIds = getProgressMessageIds(state, kind);
+    const text = renderProgressText(state, kind, final);
+    const chunks = splitTelegramText(text).map((chunk, index, all) => formatTelegramMessage(kind, chunk, index, all.length));
     const nextIds: number[] = [];
 
     for (let i = 0; i < chunks.length; i += 1) {
@@ -207,6 +228,8 @@ export class TelegramTraceConsumer implements TraceConsumer {
           chat_id: chatId,
           message_id: existingId,
           text: chunks[i],
+          parse_mode: "HTML",
+          disable_web_page_preview: true,
         }, { ignoreDescriptions: ["message is not modified"] });
 
         if (edited.ok) {
@@ -219,16 +242,25 @@ export class TelegramTraceConsumer implements TraceConsumer {
       if (sentId) nextIds.push(sentId);
     }
 
-    for (const id of previousIds.slice(chunks.length)) {
-      await this.deleteMessage(chatId, id);
+    for (let i = chunks.length; i < previousIds.length; i += 1) {
+      const id = previousIds[i];
+      const edited = await this.tryTelegram("editMessageText", {
+        chat_id: chatId,
+        message_id: id,
+        text: formatTelegramMessage(kind, "Continued above."),
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+      }, { ignoreDescriptions: ["message is not modified"] });
+      if (edited.ok) nextIds.push(id);
     }
 
-    this.setTemporaryMessageIds(state, kind, nextIds);
+    setProgressMessageIds(state, kind, nextIds);
   }
 
-  private async sendText(chatId: string, text: string): Promise<number[]> {
+  private async sendText(chatId: string, kind: TelegramMessageKind, text: string): Promise<number[]> {
     const ids: number[] = [];
-    for (const chunk of splitTelegramText(text)) {
+    const chunks = splitTelegramText(text).map((chunk, index, all) => formatTelegramMessage(kind, chunk, index, all.length));
+    for (const chunk of chunks) {
       const id = await this.sendMessage(chatId, chunk);
       if (id) ids.push(id);
     }
@@ -241,6 +273,7 @@ export class TelegramTraceConsumer implements TraceConsumer {
     const body: Record<string, unknown> = {
       chat_id: chatId,
       text,
+      parse_mode: "HTML",
       disable_web_page_preview: true,
     };
     if (isTopicEligibleChat(chatId) && typeof state.messageThreadId === "number") {
@@ -251,40 +284,44 @@ export class TelegramTraceConsumer implements TraceConsumer {
     return messageId(result.result);
   }
 
-  private async deleteTemporaryMessages(chatId: string): Promise<void> {
+  private clearTemporaryState(chatId: string): void {
     const state = this.getChatState(chatId);
-    const ids = [
-      ...state.thinkingMessageIds,
-      ...state.toolMessageIds,
-      ...state.assistantMessageIds,
-    ];
-
-    for (const id of ids) {
-      await this.deleteMessage(chatId, id);
-    }
-
     state.thinkingMessageIds = [];
     state.toolMessageIds = [];
     state.assistantMessageIds = [];
+    state.thinkingText = "";
+    state.assistantText = "";
     state.toolLines = [];
   }
 
-  private async deleteMessage(chatId: string, messageIdValue: number): Promise<void> {
-    await this.tryTelegram("deleteMessage", {
-      chat_id: chatId,
-      message_id: messageIdValue,
-    }, {
-      ignoreDescriptions: [
-        "message to delete not found",
-        "message can't be deleted",
-        "message identifier is not specified",
-      ],
-    });
+  private async deleteProgressMessages(chatId: string, kinds: TelegramMessageKind[]): Promise<void> {
+    const state = this.getChatState(chatId);
+    const ids = kinds.flatMap((kind) => getProgressMessageIds(state, kind));
+    await this.deleteMessageIds(chatId, ids);
+
+    for (const kind of kinds) {
+      setProgressMessageIds(state, kind, []);
+    }
+  }
+
+  private async deleteMessageIds(chatId: string, ids: number[]): Promise<void> {
+    for (const id of ids) {
+      await this.tryTelegram("deleteMessage", {
+        chat_id: chatId,
+        message_id: id,
+      }, {
+        ignoreDescriptions: [
+          "message to delete not found",
+          "message can't be deleted",
+          "message identifier is not specified",
+        ],
+      });
+    }
   }
 
   private async closeCurrentSessionTopics(): Promise<void> {
     for (const chatId of this.chatIds) {
-      await this.deleteTemporaryMessages(chatId);
+      this.clearTemporaryState(chatId);
       await this.closeTopic(chatId);
     }
     this.updateTelegramAssetMap();
@@ -372,30 +409,15 @@ export class TelegramTraceConsumer implements TraceConsumer {
     const created: ChatState = {
       topicAttempted: false,
       thinkingMessageIds: [],
-      assistantMessageIds: [],
       toolMessageIds: [],
+      assistantMessageIds: [],
+      summaryMessageIds: [],
+      thinkingText: "",
+      assistantText: "",
       toolLines: [],
     };
     this.chatStates.set(chatId, created);
     return created;
-  }
-
-  private getTemporaryMessageIds(state: ChatState, kind: TemporaryKind): number[] {
-    if (kind === "thinking") return state.thinkingMessageIds;
-    if (kind === "assistant") return state.assistantMessageIds;
-    return state.toolMessageIds;
-  }
-
-  private setTemporaryMessageIds(state: ChatState, kind: TemporaryKind, ids: number[]): void {
-    if (kind === "thinking") {
-      state.thinkingMessageIds = ids;
-      return;
-    }
-    if (kind === "assistant") {
-      state.assistantMessageIds = ids;
-      return;
-    }
-    state.toolMessageIds = ids;
   }
 
   private deriveTopicName(): string {
@@ -404,8 +426,12 @@ export class TelegramTraceConsumer implements TraceConsumer {
     return sanitized.slice(0, 9) || "Pi_Trace";
   }
 
+  private totalsKey(): string {
+    return this.sessionId ?? this.runId;
+  }
+
   private formatRunSummary(payload: Record<string, unknown>): string {
-    const stats = (payload.stats ?? {}) as Record<string, unknown>;
+    const stats = this.totals;
     const lines = ["Run Summary", ""];
 
     lines.push(`Run ID: ${this.runId}`);
@@ -420,16 +446,12 @@ export class TelegramTraceConsumer implements TraceConsumer {
     if (usage) lines.push("", usage);
 
     const countParts: string[] = [];
-    const turnCount = numberValue(stats.turnCount);
-    const messageCount = numberValue(stats.messageCount);
-    const toolCount = numberValue(stats.toolCount);
-    const errorCount = numberValue(stats.errorCount);
-    const durationMs = numberValue(stats.durationMs);
-    if (turnCount !== undefined) countParts.push(`Turns: ${turnCount}`);
-    if (messageCount !== undefined) countParts.push(`Messages: ${messageCount}`);
-    if (toolCount !== undefined) countParts.push(`Tools: ${toolCount}`);
-    if (errorCount !== undefined) countParts.push(`Errors: ${errorCount}`);
-    if (durationMs !== undefined) countParts.push(`Duration: ${formatDuration(durationMs)}`);
+    countParts.push(`Turns: ${stats.turnCount}`);
+    countParts.push(`Loops: ${stats.loops}`);
+    countParts.push(`Messages: ${stats.messageCount}`);
+    countParts.push(`Tools: ${stats.toolCount}`);
+    countParts.push(`Errors: ${stats.errorCount}`);
+    countParts.push(`Duration: ${formatDuration(stats.durationMs)}`);
     if (countParts.length > 0) lines.push(countParts.join(" | "));
 
     return lines.join("\n");
@@ -447,6 +469,7 @@ export class TelegramTraceConsumer implements TraceConsumer {
   }
 
   private updateTelegramAssetMap(): void {
+    this.totalsByKey.set(this.totalsKey(), this.totals);
     updateSessionAssetMap(this.assetMapPath, this.sessionId, {
       telegram: {
         chats: this.chatIds.map((chatId) => {
@@ -457,21 +480,32 @@ export class TelegramTraceConsumer implements TraceConsumer {
             ...(typeof state.messageThreadId === "number" ? { messageThreadId: state.messageThreadId } : {}),
             topicCreated: typeof state.messageThreadId === "number",
             ...(state.topicClosed ? { topicClosed: true } : {}),
+            ...(state.summaryMessageIds.length > 0 ? { summaryMessageIds: state.summaryMessageIds } : {}),
           };
         }),
+        totals: this.totals,
       },
     });
   }
 
   private restoreTelegramAssetMap(): void {
-    if (!this.assetMapPath || !this.sessionId) return;
+    if (!this.sessionId) return;
+    if (!this.assetMapPath) {
+      this.totals = normalizeTotals(this.totalsByKey.get(this.totalsKey()));
+      return;
+    }
 
     try {
       const entry = loadSessionAssetMap(this.assetMapPath).sessions[this.sessionId];
+      this.totals = normalizeTotals(entry?.telegram?.totals ?? this.totalsByKey.get(this.totalsKey()));
+      this.totalsByKey.set(this.totalsKey(), this.totals);
       for (const chat of entry?.telegram?.chats ?? []) {
         if (!this.chatIds.includes(chat.chatId)) continue;
-        if (!isTopicEligibleChat(chat.chatId)) continue;
         const state = this.getChatState(chat.chatId);
+        state.summaryMessageIds = Array.isArray(chat.summaryMessageIds)
+          ? chat.summaryMessageIds.filter((id) => typeof id === "number" && Number.isFinite(id))
+          : [];
+        if (!isTopicEligibleChat(chat.chatId)) continue;
         state.topicAttempted = Boolean(chat.topicCreated);
         state.topicName = chat.topicName;
         state.messageThreadId = typeof chat.messageThreadId === "number" ? chat.messageThreadId : undefined;
@@ -494,7 +528,7 @@ export class TelegramTraceConsumer implements TraceConsumer {
     this.cwd = undefined;
     this.titleSubject = undefined;
     this.lastAssistantText = "";
-    this.turnToolCount = 0;
+    this.totals = createEmptyTotals();
   }
 
   private async tryTelegram(
@@ -570,6 +604,57 @@ function renderReadableText(value: unknown): string {
   return safeJson(value);
 }
 
+function renderProgressText(state: ChatState, kind: TelegramMessageKind, final: boolean): string {
+  if (kind === "thinking") return state.thinkingText.trim();
+  if (kind === "tool") return state.toolLines.join("\n").trim();
+  if (kind === "assistant") {
+    if (final && state.assistantText.trim()) return state.assistantText.trim();
+    return state.assistantText.trim();
+  }
+  return "";
+}
+
+function getProgressMessageIds(state: ChatState, kind: TelegramMessageKind): number[] {
+  if (kind === "thinking") return state.thinkingMessageIds;
+  if (kind === "tool") return state.toolMessageIds;
+  if (kind === "assistant") return state.assistantMessageIds;
+  return [];
+}
+
+function setProgressMessageIds(state: ChatState, kind: TelegramMessageKind, ids: number[]): void {
+  if (kind === "thinking") {
+    state.thinkingMessageIds = ids;
+    return;
+  }
+  if (kind === "tool") {
+    state.toolMessageIds = ids;
+    return;
+  }
+  if (kind === "assistant") {
+    state.assistantMessageIds = ids;
+  }
+}
+
+function renderToolInput(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return renderReadableText(value);
+
+  const record = value as Record<string, unknown>;
+  const command = stringValue(record.command);
+  if (command) return command;
+
+  const args = stringValue(record.args);
+  if (args) return args;
+
+  return renderReadableText(value);
+}
+
+function oneLine(value: string, maxLength: number): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
 function splitTelegramText(text: string): string[] {
   const normalized = text.trim();
   if (!normalized) return [];
@@ -594,26 +679,167 @@ function splitTelegramText(text: string): string[] {
   return chunks;
 }
 
+function formatTelegramMessage(kind: TelegramMessageKind, text: string, index = 0, total = 1): string {
+  const label = telegramKindLabel(kind);
+  const suffix = total > 1 ? ` ${index + 1}/${total}` : "";
+  const body = renderTelegramHtml(text);
+  return `${label.icon} <b>${escapeHtml(label.title)}${suffix}</b>${body ? `\n\n${body}` : ""}`;
+}
+
+function telegramKindLabel(kind: TelegramMessageKind): { icon: string; title: string } {
+  if (kind === "thinking") return { icon: "💭", title: "Thinking" };
+  if (kind === "tool") return { icon: "🛠", title: "Tool Call" };
+  if (kind === "summary") return { icon: "📊", title: "Run Summary" };
+  return { icon: "🤖", title: "Assistant" };
+}
+
+function renderTelegramHtml(text: string): string {
+  const segments = splitMarkdownCodeFences(text.trim());
+  return segments.map((segment) => {
+    if (segment.kind === "code") {
+      const languageClass = segment.language ? ` class="language-${escapeHtmlAttribute(segment.language)}"` : "";
+      return `<pre><code${languageClass}>${escapeHtml(segment.value)}</code></pre>`;
+    }
+    return renderInlineMarkdownHtml(segment.value);
+  }).join("");
+}
+
+function splitMarkdownCodeFences(text: string): Array<{ kind: "text" | "code"; value: string; language?: string }> {
+  const segments: Array<{ kind: "text" | "code"; value: string; language?: string }> = [];
+  const fencePattern = /```([^\n`]*)\n?([\s\S]*?)```/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = fencePattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      segments.push({ kind: "text", value: text.slice(lastIndex, match.index) });
+    }
+    segments.push({
+      kind: "code",
+      language: match[1]?.trim(),
+      value: match[2] ?? "",
+    });
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < text.length) {
+    segments.push({ kind: "text", value: text.slice(lastIndex) });
+  }
+  return segments;
+}
+
+function renderInlineMarkdownHtml(text: string): string {
+  const lines = text.split("\n").map((line) => {
+    const heading = /^(#{1,6})\s+(.+)$/.exec(line);
+    if (heading) return `<b>${renderInlineMarkdownTokens(heading[2])}</b>`;
+    return renderInlineMarkdownTokens(line);
+  });
+  return lines.join("\n");
+}
+
+function renderInlineMarkdownTokens(text: string): string {
+  const placeholders: string[] = [];
+  let protectedText = text;
+
+  protectedText = protectedText.replace(/`([^`\n]+)`/g, (_match, code: string) => {
+    const token = `\u0000${placeholders.length}\u0000`;
+    placeholders.push(`<code>${escapeHtml(code)}</code>`);
+    return token;
+  });
+
+  protectedText = protectedText.replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, (_match, label: string, url: string) => {
+    const token = `\u0000${placeholders.length}\u0000`;
+    placeholders.push(`<a href="${escapeHtmlAttribute(url)}">${escapeHtml(label)}</a>`);
+    return token;
+  });
+
+  let escaped = escapeHtml(protectedText);
+  escaped = escaped.replace(/\*\*([^*\n][\s\S]*?[^*\n])\*\*/g, "<b>$1</b>");
+
+  return escaped.replace(/\u0000(\d+)\u0000/g, (_match, index: string) => placeholders[Number(index)] ?? "");
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return escapeHtml(value).replace(/"/g, "&quot;");
+}
+
+function createEmptyTotals(): TelegramTotals {
+  return {
+    loops: 0,
+    turnCount: 0,
+    messageCount: 0,
+    toolCount: 0,
+    errorCount: 0,
+    durationMs: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    totalTokens: 0,
+    cost: 0,
+  };
+}
+
+function normalizeTotals(value: unknown): TelegramTotals {
+  const record = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  return {
+    loops: numberValue(record.loops) ?? 0,
+    turnCount: numberValue(record.turnCount) ?? 0,
+    messageCount: numberValue(record.messageCount) ?? 0,
+    toolCount: numberValue(record.toolCount) ?? 0,
+    errorCount: numberValue(record.errorCount) ?? 0,
+    durationMs: numberValue(record.durationMs) ?? 0,
+    inputTokens: numberValue(record.inputTokens) ?? 0,
+    outputTokens: numberValue(record.outputTokens) ?? 0,
+    cacheReadTokens: numberValue(record.cacheReadTokens) ?? 0,
+    cacheWriteTokens: numberValue(record.cacheWriteTokens) ?? 0,
+    totalTokens: numberValue(record.totalTokens) ?? 0,
+    cost: numberValue(record.cost) ?? 0,
+  };
+}
+
+function accumulateTotals(current: TelegramTotals, stats: Record<string, unknown>): TelegramTotals {
+  return {
+    loops: current.loops + 1,
+    turnCount: current.turnCount + (numberValue(stats.turnCount) ?? 0),
+    messageCount: current.messageCount + (numberValue(stats.messageCount) ?? 0),
+    toolCount: current.toolCount + (numberValue(stats.toolCount) ?? 0),
+    errorCount: current.errorCount + (numberValue(stats.errorCount) ?? 0),
+    durationMs: current.durationMs + (numberValue(stats.durationMs) ?? 0),
+    inputTokens: current.inputTokens + (numberValue(stats.inputTokens) ?? 0),
+    outputTokens: current.outputTokens + (numberValue(stats.outputTokens) ?? 0),
+    cacheReadTokens: current.cacheReadTokens + (numberValue(stats.cacheReadTokens) ?? 0),
+    cacheWriteTokens: current.cacheWriteTokens + (numberValue(stats.cacheWriteTokens) ?? 0),
+    totalTokens: current.totalTokens + (numberValue(stats.totalTokens) ?? 0),
+    cost: current.cost + (numberValue(stats.cost) ?? 0),
+  };
+}
+
 function findSplitPoint(text: string, separator: string): number {
   const splitAt = text.lastIndexOf(separator, MAX_MESSAGE_CHARS);
   return splitAt >= Math.floor(MAX_MESSAGE_CHARS * 0.5) ? splitAt + separator.length : -1;
 }
 
-function formatUsageLine(stats: Record<string, unknown>): string | undefined {
+function formatUsageLine(stats: Partial<TelegramTotals>): string | undefined {
   const parts: string[] = [];
-  const totalTokens = numberValue(stats.totalTokens);
-  const inputTokens = numberValue(stats.inputTokens);
-  const outputTokens = numberValue(stats.outputTokens);
-  const cacheReadTokens = numberValue(stats.cacheReadTokens);
-  const cost = numberValue(stats.cost);
+  const totalTokens = stats.totalTokens;
+  const inputTokens = stats.inputTokens;
+  const outputTokens = stats.outputTokens;
+  const cacheReadTokens = stats.cacheReadTokens;
+  const cost = stats.cost;
 
-  if (totalTokens !== undefined) parts.push(`Tokens: ${totalTokens}`);
-  if (inputTokens !== undefined) {
+  if (totalTokens !== undefined && totalTokens > 0) parts.push(`Tokens: ${totalTokens}`);
+  if (inputTokens !== undefined && inputTokens > 0) {
     let input = `In: ${inputTokens}`;
     if (cacheReadTokens !== undefined && cacheReadTokens > 0) input += ` (cached ${cacheReadTokens})`;
     parts.push(input);
   }
-  if (outputTokens !== undefined) parts.push(`Out: ${outputTokens}`);
+  if (outputTokens !== undefined && outputTokens > 0) parts.push(`Out: ${outputTokens}`);
   if (cost !== undefined && cost > 0) parts.push(`Cost: $${cost.toFixed(4)}`);
 
   return parts.length > 0 ? parts.join(" | ") : undefined;

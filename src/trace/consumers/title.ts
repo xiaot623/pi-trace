@@ -19,6 +19,10 @@ export function buildTraceTitle(timestamp: number, subject?: string): string {
   return `${formatTraceDate(timestamp)} ${subject?.trim() || "Pi Trace"}`;
 }
 
+export function buildSubjectFirstTitle(timestamp: number, subject?: string): string {
+  return `${subject?.trim() || "Pi Trace"} ${formatTraceDate(timestamp)}`;
+}
+
 export function sanitizeTraceFileName(title: string): string {
   return title.replace(/[^a-zA-Z0-9_\-\u4e00-\u9fa5]/g, "_").slice(0, 120);
 }

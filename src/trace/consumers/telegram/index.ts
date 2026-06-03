@@ -2,7 +2,7 @@ import { loadSessionAssetMap, updateSessionAssetMap } from "../../assets/session
 import type { TraceConsumer, TraceEvent } from "../../core/types.js";
 import { logger } from "../../core/logger.js";
 import { safeJson } from "../../core/utils.js";
-import { buildTraceTitle, deriveTraceTitleSubject } from "../title.js";
+import { buildSubjectFirstTitle, deriveTraceTitleSubject } from "../title.js";
 
 export interface TelegramTraceConsumerOptions {
   botToken: string;
@@ -351,7 +351,7 @@ export class TelegramTraceConsumer implements TraceConsumer {
   }
 
   private deriveTopicName(): string {
-    return buildTraceTitle(this.timestamp, this.titleSubject).slice(0, 128);
+    return buildSubjectFirstTitle(this.timestamp, this.titleSubject).slice(0, 128);
   }
 
   private totalsKey(): string {

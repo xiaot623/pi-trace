@@ -1,5 +1,5 @@
 {
-  "name": "pi-trace",
+  "name": "@hahahhh/pi-trace",
   "version": "0.0.1-rc.0",
   "type": "module",
   "description": "Captures agent running information",
@@ -19,6 +19,8 @@
     "test": "npm run build && node --test tests/*.test.mjs",
     "test:qa": "node --test e2e/*.e2e.mjs",
     "pre_release": "npm version prerelease --preid=rc -m \"chore: pre-release v%s\" && git push origin HEAD --follow-tags",
+    "publish:rc": "npm publish --access public --tag next",
+    "publish:release": "npm publish --access public --tag latest",
     "release:patch": "node scripts/release.js patch",
     "release:minor": "node scripts/release.js minor",
     "release:major": "node scripts/release.js major"

@@ -54,7 +54,14 @@ export function resolveConfig(options: ResolveConfigOptions = {}): TraceConfig {
 }
 
 function detectEnv(): "development" | "production" {
-  return process.env.NODE_ENV === "production" ? "production" : "development";
+  if (process.env.NODE_ENV === "production" || process.env.NODE_ENV === "development") {
+    return process.env.NODE_ENV;
+  }
+  // Default to production if installed as a package (in node_modules)
+  if (import.meta.url.includes("/node_modules/") || import.meta.url.includes("\\node_modules\\")) {
+    return "production";
+  }
+  return "development";
 }
 
 function getConfigPath(env: string, assetDir: string): string {

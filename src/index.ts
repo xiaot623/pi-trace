@@ -8,6 +8,7 @@ import { TelegramTraceConsumer } from "./trace/consumers/telegram/index.js";
 import { TraceCore } from "./trace/core/trace-core.js";
 import { TraceProducer } from "./trace/producers/pi-hook-producer.js";
 import { logger } from "./trace/core/logger.js";
+import { registerFlags } from "./trace/flags.js";
 export { resolveConfig } from "./trace/config/resolve-config.js";
 export type {
   ConsoleConfig,
@@ -31,6 +32,8 @@ export { TraceProducer } from "./trace/producers/pi-hook-producer.js";
 export type { TraceConsumer, TraceConsumerFilter, TraceEvent, TraceFilterKind, TraceKind } from "./trace/core/types.js";
 
 export default function traceExtension(pi: ExtensionAPI): void {
+  registerFlags(pi);
+
   const config = resolveConfig();
   logger.init(config.logDir);
   const core = new TraceCore();

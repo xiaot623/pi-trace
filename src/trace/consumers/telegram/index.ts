@@ -3,6 +3,7 @@ import type { TraceConsumer, TraceEvent } from "../../core/types.js";
 import { logger } from "../../core/logger.js";
 import { safeJson } from "../../core/utils.js";
 import { buildSubjectFirstTitle, deriveTraceTitleSubject } from "../title.js";
+import { overrides } from "../../flags.js";
 
 export interface TelegramTraceConsumerOptions {
   botToken: string;
@@ -317,6 +318,16 @@ export class TelegramTraceConsumer implements TraceConsumer {
     if (state.topicAttempted) return;
 
     state.topicAttempted = true;
+
+    // If --topic flag provided an existing thread id, use it directly.
+    const existingThreadId = parseThreadId(overrides.telegramThreadId);
+    if (existingThreadId !== undefined) {
+      state.messageThreadId = existingThreadId;
+      state.topicName = "(external)";
+      this.updateTelegramAssetMap();
+      return;
+    }
+
     state.topicName = this.deriveTopicName();
     const result = await this.tryTelegram("createForumTopic", {
       chat_id: chatId,
@@ -434,6 +445,16 @@ export class TelegramTraceConsumer implements TraceConsumer {
           ? chat.summaryMessageIds.filter((id) => typeof id === "number" && Number.isFinite(id))
           : [];
         if (!isTopicEligibleChat(chat.chatId)) continue;
+
+        // Flag override always wins over persisted state.
+        const flagThreadId = parseThreadId(overrides.telegramThreadId);
+        if (flagThreadId !== undefined) {
+          state.topicAttempted = true;
+          state.topicName = "(external)";
+          state.messageThreadId = flagThreadId;
+          continue;
+        }
+
         state.topicAttempted = Boolean(chat.topicCreated);
         state.topicName = chat.topicName;
         state.messageThreadId = typeof chat.messageThreadId === "number" ? chat.messageThreadId : undefined;
@@ -796,6 +817,13 @@ function messageThreadId(value: unknown): number | undefined {
   if (!value || typeof value !== "object") return undefined;
   const id = (value as TelegramTopicResult).message_thread_id;
   return typeof id === "number" ? id : undefined;
+}
+
+/** Parse a message_thread_id from --topic flag value. */
+function parseThreadId(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const num = Number(value);
+  return Number.isFinite(num) && num > 0 ? num : undefined;
 }
 
 function isTopicEligibleChat(chatId: string): boolean {

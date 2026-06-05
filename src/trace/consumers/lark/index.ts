@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { updateSessionAssetMap } from "../../assets/session-asset-map.js";
 import type { TraceConsumer, TraceEvent } from "../../core/types.js";
 import { safeJson } from "../../core/utils.js";
@@ -42,6 +42,7 @@ export class LarkTraceConsumer implements TraceConsumer {
   private pendingSections: string[] = [];
   private initialized = false;
   private flushSeq = 0;
+  private queue: Promise<void> = Promise.resolve();
 
   constructor(options: LarkTraceConsumerOptions) {
     this.wikiSpaceId = options.wikiSpaceId;
@@ -52,7 +53,16 @@ export class LarkTraceConsumer implements TraceConsumer {
   // TraceConsumer interface
   // --------------------------------------------------------------------------
 
-  consume(event: TraceEvent): void | Promise<void> {
+  consume(event: TraceEvent): Promise<void> {
+    this.queue = this.queue
+      .then(() => this.handleEvent(event))
+      .catch((error: unknown) => {
+        logger.error("[trace:lark] event handling failed", error);
+      });
+    return this.queue;
+  }
+
+  private async handleEvent(event: TraceEvent): Promise<void> {
     this.ensureInitialized(event);
 
     switch (event.type) {
@@ -63,9 +73,11 @@ export class LarkTraceConsumer implements TraceConsumer {
         this.handleToolRecord(event.payload);
         break;
       case "turn.record":
-        return this.handleTurnRecord(event.payload);
+        await this.handleTurnRecord(event.payload);
+        break;
       case "agent.run":
-        return this.handleAgentRun(event.payload);
+        await this.handleAgentRun(event.payload);
+        break;
     }
   }
 
@@ -220,8 +232,8 @@ export class LarkTraceConsumer implements TraceConsumer {
       if (!this.documentToken) {
         // First flush: create wiki node, then append content
         const title = this.deriveTitle();
-        const monthNodeToken = this.resolveMonthNodeToken();
-        const nodeResult = this.execLarkCli([
+        const monthNodeToken = await this.resolveMonthNodeToken();
+        const nodeResult = await this.execLarkCli([
           "wiki", "+node-create",
           "--space-id", this.wikiSpaceId,
           "--parent-node-token", monthNodeToken,
@@ -232,7 +244,7 @@ export class LarkTraceConsumer implements TraceConsumer {
 
         // Append callout + initial content
         const createXml = this.buildCreateXml([]);
-        this.execLarkCli([
+        await this.execLarkCli([
           "docs", "+update",
           "--api-version", "v2",
           "--doc", this.documentToken!,
@@ -243,7 +255,7 @@ export class LarkTraceConsumer implements TraceConsumer {
       }
 
       // Append turn content in chunks — never truncate
-      this.appendInChunks(sections);
+      await this.appendInChunks(sections);
       logger.info(`[trace:lark] flush #${seq} ok${this.documentUrl ? ` → ${this.documentUrl}` : ""}`);
     } catch (error) {
       logger.error(`[trace:lark] flush #${seq} failed`, error);
@@ -251,11 +263,11 @@ export class LarkTraceConsumer implements TraceConsumer {
   }
 
   /** Append sections to the document, splitting into multiple CLI calls if needed. */
-  private appendInChunks(sections: string[]): void {
+  private async appendInChunks(sections: string[]): Promise<void> {
     const chunks = packSectionsIntoChunks(sections, MAX_CHUNK_CHARS);
 
     for (let i = 0; i < chunks.length; i++) {
-      this.execLarkCli([
+      await this.execLarkCli([
         "docs", "+update",
         "--api-version", "v2",
         "--doc", this.documentToken!,
@@ -275,17 +287,17 @@ export class LarkTraceConsumer implements TraceConsumer {
     return [callout, ...turnSections].join("\n");
   }
 
-  private resolveMonthNodeToken(): string {
+  private async resolveMonthNodeToken(): Promise<string> {
     if (this.monthNodeToken) return this.monthNodeToken;
 
     const title = this.monthTitle ?? formatTraceMonth(Date.now());
-    const existing = this.findWikiNodeByTitle(title);
+    const existing = await this.findWikiNodeByTitle(title);
     if (existing?.nodeToken) {
       this.monthNodeToken = existing.nodeToken;
       return existing.nodeToken;
     }
 
-    const stdout = this.execLarkCli([
+    const stdout = await this.execLarkCli([
       "wiki", "+node-create",
       "--space-id", this.wikiSpaceId,
       "--title", title,
@@ -300,8 +312,8 @@ export class LarkTraceConsumer implements TraceConsumer {
     return created.nodeToken;
   }
 
-  private findWikiNodeByTitle(title: string): { nodeToken?: string; objToken?: string; url?: string } | undefined {
-    const stdout = this.execLarkCli([
+  private async findWikiNodeByTitle(title: string): Promise<{ nodeToken?: string; objToken?: string; url?: string } | undefined> {
+    const stdout = await this.execLarkCli([
       "wiki", "+node-list",
       "--space-id", this.wikiSpaceId,
       "--page-all",
@@ -349,25 +361,30 @@ export class LarkTraceConsumer implements TraceConsumer {
   // Lark CLI execution
   // --------------------------------------------------------------------------
 
-  private execLarkCli(args: string[], stdinContent: string): string {
-    const result = spawnSync("lark-cli", args, {
-      input: stdinContent,
-      encoding: "utf8",
-      timeout: 30_000,
+  private async execLarkCli(args: string[], stdinContent: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const child = spawn("lark-cli", args, { timeout: 30000 });
+      let stdout = "";
+      let stderr = "";
+      child.stdout?.on("data", (chunk) => stdout += chunk);
+      child.stderr?.on("data", (chunk) => stderr += chunk);
+
+      if (stdinContent) {
+        child.stdin?.write(stdinContent);
+        child.stdin?.end();
+      }
+
+      child.on("close", (code) => {
+        if (code !== 0) {
+          reject(new Error(`lark-cli exited with ${code}: ${stderr || stdout}`));
+        } else {
+          resolve(stdout);
+        }
+      });
+      child.on("error", (error) => {
+        reject(new Error(`lark-cli spawn failed: ${error.message}`));
+      });
     });
-
-    if (result.error) {
-      throw new Error(`lark-cli spawn failed: ${result.error.message}`);
-    }
-
-    const stdout = result.stdout ?? "";
-    const stderr = result.stderr ?? "";
-
-    if (result.status !== 0) {
-      throw new Error(`lark-cli exited with ${result.status}: ${stderr || stdout}`);
-    }
-
-    return stdout;
   }
 
   private extractDocumentToken(stdout: string): void {

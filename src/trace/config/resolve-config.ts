@@ -25,8 +25,12 @@ export function resolveConfig(options: ResolveConfigOptions = {}): TraceConfig {
     options.config?.consumers,
   ) as { console: ConsoleConfig; markdown: MarkdownConfig; lark: LarkConfig; telegram: TelegramConfig };
 
-  const telegramToken = process.env.PI_TRACE_TELEGRAM_BOT_TOKEN?.trim() || merged.telegram.botToken;
-  const telegramChatIds = parseChatIds(process.env.PI_TRACE_TELEGRAM_CHAT_IDS) ?? merged.telegram.chatIds;
+  const envTelegramToken = process.env.PI_TRACE_TELEGRAM_BOT_TOKEN?.trim();
+  const envTelegramChatIds = parseChatIds(process.env.PI_TRACE_TELEGRAM_CHAT_IDS);
+  const hasTelegramEnvOverride = Boolean(envTelegramToken && envTelegramChatIds?.length);
+  const telegramToken = hasTelegramEnvOverride ? envTelegramToken! : merged.telegram.botToken;
+  const telegramChatIds = hasTelegramEnvOverride ? envTelegramChatIds! : merged.telegram.chatIds;
+  const telegramEnabled = hasTelegramEnvOverride ? true : merged.telegram.enabled;
 
   return {
     assetDir,
@@ -44,7 +48,7 @@ export function resolveConfig(options: ResolveConfigOptions = {}): TraceConfig {
       wiki_space_id: merged.lark.wiki_space_id,
     },
     telegram: {
-      enabled: merged.telegram.enabled,
+      enabled: telegramEnabled,
       botToken: telegramToken,
       chatIds: Array.isArray(telegramChatIds)
         ? telegramChatIds.map((id) => typeof id === "string" ? id.trim() : "").filter(Boolean)

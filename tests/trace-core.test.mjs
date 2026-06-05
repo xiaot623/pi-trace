@@ -386,22 +386,29 @@ test("resolveConfig merges telegram config and supports env token override", () 
       configPath,
       JSON.stringify({
         consumers: {
-          telegram: { enabled: true, botToken: "file-token", chatIds: ["1", "-1002"] },
+          telegram: { enabled: false, botToken: "file-token", chatIds: ["1", "-1002"] },
         },
       }),
       "utf8",
     );
 
     const fromFile = resolveConfig({ cwd: dir });
-    assert.equal(fromFile.telegram.enabled, true);
+    assert.equal(fromFile.telegram.enabled, false);
     assert.equal(fromFile.telegram.botToken, "file-token");
     assert.deepEqual(fromFile.telegram.chatIds, ["1", "-1002"]);
 
     process.env.PI_TRACE_TELEGRAM_BOT_TOKEN = "env-token";
     process.env.PI_TRACE_TELEGRAM_CHAT_IDS = "3, -1004";
     const fromEnv = resolveConfig({ cwd: dir });
+    assert.equal(fromEnv.telegram.enabled, true);
     assert.equal(fromEnv.telegram.botToken, "env-token");
     assert.deepEqual(fromEnv.telegram.chatIds, ["3", "-1004"]);
+
+    delete process.env.PI_TRACE_TELEGRAM_CHAT_IDS;
+    const partialEnv = resolveConfig({ cwd: dir });
+    assert.equal(partialEnv.telegram.enabled, false);
+    assert.equal(partialEnv.telegram.botToken, "file-token");
+    assert.deepEqual(partialEnv.telegram.chatIds, ["1", "-1002"]);
   } finally {
     if (previousToken === undefined) delete process.env.PI_TRACE_TELEGRAM_BOT_TOKEN;
     else process.env.PI_TRACE_TELEGRAM_BOT_TOKEN = previousToken;

@@ -57,15 +57,11 @@ export default function traceExtension(pi: ExtensionAPI): void {
   }
 
   if (config.telegram.enabled) {
-    if (!config.telegram.botToken || config.telegram.chatIds.length === 0) {
-      logger.error("[trace:telegram] enabled but botToken or chatIds is missing");
-    } else {
-      core.registerConsumer(new TelegramTraceConsumer({
-        botToken: config.telegram.botToken,
-        chatIds: config.telegram.chatIds,
-        assetMapPath: config.assetMapPath,
-      }));
-    }
+    core.registerConsumer(new TelegramTraceConsumer({
+      botToken: config.telegram.botToken,
+      chatIds: config.telegram.chatIds,
+      assetMapPath: config.assetMapPath,
+    }));
   }
 
   const producer = new TraceProducer(core);

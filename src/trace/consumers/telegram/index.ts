@@ -62,8 +62,10 @@ export class TelegramTraceConsumer implements TraceConsumer {
   readonly name = "telegram";
   readonly filter = { kinds: ["batch" as const] };
 
-  private readonly botToken: string;
-  private readonly chatIds: string[];
+  private botToken: string;
+  private chatIds: string[];
+  private readonly configuredBotToken: string;
+  private readonly configuredChatIds: string[];
   private readonly assetMapPath?: string;
   private readonly apiBaseUrl: string;
   private readonly requestOverride?: TelegramRequest;
@@ -84,8 +86,10 @@ export class TelegramTraceConsumer implements TraceConsumer {
   private readonly totalsByKey = new Map<string, TelegramTotals>();
 
   constructor(options: TelegramTraceConsumerOptions) {
-    this.botToken = options.botToken;
-    this.chatIds = dedupe(options.chatIds.map(String).map((id) => id.trim()).filter(Boolean));
+    this.configuredBotToken = options.botToken;
+    this.configuredChatIds = dedupe(options.chatIds.map(String).map((id) => id.trim()).filter(Boolean));
+    this.botToken = this.configuredBotToken;
+    this.chatIds = this.configuredChatIds;
     this.assetMapPath = options.assetMapPath;
     this.apiBaseUrl = options.apiBaseUrl ?? "https://api.telegram.org";
     this.requestOverride = options.request;
@@ -105,6 +109,7 @@ export class TelegramTraceConsumer implements TraceConsumer {
   }
 
   private async handleEvent(event: TraceEvent): Promise<void> {
+    this.refreshRuntimeCredentials();
     if (!this.botToken || this.chatIds.length === 0) return;
     await this.prepareSession(event);
 
@@ -121,6 +126,18 @@ export class TelegramTraceConsumer implements TraceConsumer {
         await this.handleAgentRun(event.payload);
         break;
     }
+  }
+
+  private refreshRuntimeCredentials(): void {
+    const envToken = process.env.PI_TRACE_TELEGRAM_BOT_TOKEN?.trim();
+    const envChatIds = parseRuntimeChatIds(process.env.PI_TRACE_TELEGRAM_CHAT_IDS);
+    if (envToken && envChatIds) {
+      this.botToken = envToken;
+      this.chatIds = envChatIds;
+      return;
+    }
+    this.botToken = this.configuredBotToken;
+    this.chatIds = this.configuredChatIds;
   }
 
   private async prepareSession(event: TraceEvent): Promise<void> {
@@ -551,6 +568,12 @@ function extractAssistantContent(content: unknown): { thinking: string; text: st
     thinking: thinking.join("\n\n"),
     text: text.join("\n\n"),
   };
+}
+
+function parseRuntimeChatIds(value: string | undefined): string[] | undefined {
+  if (!value) return undefined;
+  const ids = dedupe(value.split(",").map((id) => id.trim()).filter(Boolean));
+  return ids.length > 0 ? ids : undefined;
 }
 
 function renderReadableText(value: unknown): string {

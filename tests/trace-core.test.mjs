@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { LarkTraceConsumer, MarkdownTraceConsumer, TelegramTraceConsumer, TraceCore, matchesTraceFilter, resolveConfig, TraceProducer } from "../dist/index.js";
+import { overrides, registerFlags } from "../dist/trace/flags.js";
 
 class CaptureConsumer {
   constructor(name, filter) {
@@ -410,6 +411,36 @@ test("resolveConfig merges telegram config and supports env token override", () 
   }
 });
 
+test("registerFlags reads topic after session_start when CLI flags are available", () => {
+  let flagValue;
+  const handlers = new Map();
+  const pi = {
+    registerFlag(name, options) {
+      assert.equal(name, "topic");
+      assert.equal(options.type, "string");
+    },
+    getFlag(name) {
+      assert.equal(name, "topic");
+      return flagValue;
+    },
+    on(eventName, handler) {
+      handlers.set(eventName, handler);
+    },
+  };
+
+  try {
+    delete overrides.telegramThreadId;
+    registerFlags(pi);
+    assert.equal(overrides.telegramThreadId, undefined);
+
+    flagValue = "12345";
+    handlers.get("session_start")();
+    assert.equal(overrides.telegramThreadId, "12345");
+  } finally {
+    delete overrides.telegramThreadId;
+  }
+});
+
 test("TelegramTraceConsumer creates topics, updates temporary messages, and sends summaries", async () => {
   const calls = [];
   let messageId = 100;
@@ -565,6 +596,65 @@ test("TelegramTraceConsumer creates topics, updates temporary messages, and send
       cost: 0.01234,
     });
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("TelegramTraceConsumer reuses external topic from flag override", async () => {
+  const calls = [];
+  let messageId = 150;
+  const dir = mkdtempSync(join(tmpdir(), "pi-trace-telegram-external-topic-"));
+  const assetMapPath = join(dir, "pi-trace.assets.json");
+
+  try {
+    overrides.telegramThreadId = "88";
+    const consumer = new TelegramTraceConsumer({
+      botToken: "test-token",
+      chatIds: ["-100456"],
+      assetMapPath,
+      request: async (method, body) => {
+        calls.push({ method, body });
+        if (method === "sendMessage") return { message_id: ++messageId };
+        if (method === "editMessageText") return true;
+        throw new Error(`unexpected method ${method}`);
+      },
+    });
+    const base = { kind: "batch", timestamp: 1, runId: "run-tg" };
+
+    await consumer.consume({
+      ...base,
+      id: "m1",
+      type: "message.record",
+      payload: {
+        role: "assistant",
+        sessionId: "sess-external-topic",
+        sessionName: "external",
+        content: [{ type: "text", text: "Use the existing topic." }],
+      },
+    });
+
+    await consumer.consume({
+      ...base,
+      id: "run1",
+      type: "agent.run",
+      payload: {
+        stats: { turnCount: 1, messageCount: 1, toolCount: 0, errorCount: 0, durationMs: 10 },
+      },
+    });
+
+    assert.ok(calls.every((call) => call.method !== "createForumTopic"));
+    assert.ok(calls.filter((call) => call.method === "sendMessage").every((call) => call.body.message_thread_id === 88));
+
+    const assetMap = JSON.parse(readFileSync(assetMapPath, "utf8"));
+    assert.deepEqual(assetMap.sessions["sess-external-topic"].telegram.chats[0], {
+      chatId: "-100456",
+      topicName: "(external)",
+      messageThreadId: 88,
+      topicCreated: false,
+      summaryMessageIds: [152],
+    });
+  } finally {
+    delete overrides.telegramThreadId;
     rmSync(dir, { recursive: true, force: true });
   }
 });

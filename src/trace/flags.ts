@@ -4,7 +4,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
  * Runtime values populated from CLI flags.
  * Consumers read from here; no need to know about pi flag APIs.
  */
-export const overrides: Record<string, string> = {};
+export const overrides: Record<string, unknown> = {};
 
 /**
  * Register all CLI flags and apply their values to the shared overrides record.
@@ -16,6 +16,14 @@ export function registerFlags(pi: ExtensionAPI): void {
     type: "string",
   });
 
+  applyFlagOverrides(pi);
+  pi.on("session_start", () => {
+    applyFlagOverrides(pi);
+  });
+}
+
+export function applyFlagOverrides(pi: Pick<ExtensionAPI, "getFlag">): void {
   const topic = pi.getFlag("topic");
-  if (typeof topic === "string") overrides.telegramThreadId = topic;
+  if (topic !== undefined) overrides.telegramThreadId = topic;
+  else delete overrides.telegramThreadId;
 }

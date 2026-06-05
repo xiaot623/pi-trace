@@ -21,6 +21,7 @@ interface ChatState {
   topicAttempted: boolean;
   topicName?: string;
   messageThreadId?: number;
+  topicCreated?: boolean;
   thinkingMessageIds: number[];
   toolMessageIds: number[];
   assistantMessageIds: number[];
@@ -324,6 +325,7 @@ export class TelegramTraceConsumer implements TraceConsumer {
     if (existingThreadId !== undefined) {
       state.messageThreadId = existingThreadId;
       state.topicName = "(external)";
+      state.topicCreated = false;
       this.updateTelegramAssetMap();
       return;
     }
@@ -339,6 +341,7 @@ export class TelegramTraceConsumer implements TraceConsumer {
     const threadId = messageThreadId(result.result);
     if (threadId) {
       state.messageThreadId = threadId;
+      state.topicCreated = true;
     }
     this.updateTelegramAssetMap();
   }
@@ -417,7 +420,7 @@ export class TelegramTraceConsumer implements TraceConsumer {
             chatId,
             ...(state.topicName ? { topicName: state.topicName } : {}),
             ...(typeof state.messageThreadId === "number" ? { messageThreadId: state.messageThreadId } : {}),
-            topicCreated: typeof state.messageThreadId === "number",
+            topicCreated: Boolean(state.topicCreated),
 
             ...(state.summaryMessageIds.length > 0 ? { summaryMessageIds: state.summaryMessageIds } : {}),
           };
@@ -452,12 +455,14 @@ export class TelegramTraceConsumer implements TraceConsumer {
           state.topicAttempted = true;
           state.topicName = "(external)";
           state.messageThreadId = flagThreadId;
+          state.topicCreated = false;
           continue;
         }
 
-        state.topicAttempted = Boolean(chat.topicCreated);
+        state.topicAttempted = Boolean(chat.topicCreated || typeof chat.messageThreadId === "number");
         state.topicName = chat.topicName;
         state.messageThreadId = typeof chat.messageThreadId === "number" ? chat.messageThreadId : undefined;
+        state.topicCreated = Boolean(chat.topicCreated);
 
       }
     } catch (error) {
@@ -819,11 +824,13 @@ function messageThreadId(value: unknown): number | undefined {
   return typeof id === "number" ? id : undefined;
 }
 
-/** Parse a message_thread_id from --topic flag value. */
-function parseThreadId(value: string | undefined): number | undefined {
-  if (!value) return undefined;
-  const num = Number(value);
-  return Number.isFinite(num) && num > 0 ? num : undefined;
+/** Parse a message_thread_id from the string --topic flag value. */
+function parseThreadId(value: unknown): number | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) return undefined;
+  const num = Number(trimmed);
+  return Number.isSafeInteger(num) && num > 0 ? num : undefined;
 }
 
 function isTopicEligibleChat(chatId: string): boolean {

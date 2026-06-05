@@ -1,6 +1,6 @@
 {
   "name": "@hahahhh/pi-trace",
-  "version": "0.0.1-rc.8",
+  "version": "0.0.1-rc.9",
   "type": "module",
   "description": "Captures agent running information",
   "keywords": [

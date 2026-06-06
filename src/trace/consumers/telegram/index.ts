@@ -256,19 +256,16 @@ export class TelegramTraceConsumer implements TraceConsumer {
       }
 
       const sentId = await this.sendMessage(chatId, chunks[i]);
-      if (sentId) nextIds.push(sentId);
+      if (sentId) {
+        nextIds.push(sentId);
+        if (existingId) await this.deleteMessageIds(chatId, [existingId], { logFailures: true });
+      } else if (existingId) {
+        nextIds.push(existingId);
+      }
     }
 
     for (let i = chunks.length; i < previousIds.length; i += 1) {
-      const id = previousIds[i];
-      const edited = await this.tryTelegram("editMessageText", {
-        chat_id: chatId,
-        message_id: id,
-        text: formatTelegramMessage(kind, "Continued above."),
-        parse_mode: "HTML",
-        disable_web_page_preview: true,
-      }, { ignoreDescriptions: ["message is not modified"] });
-      if (edited.ok) nextIds.push(id);
+      await this.deleteMessageIds(chatId, [previousIds[i]], { logFailures: true });
     }
 
     setProgressMessageIds(state, kind, nextIds);
@@ -311,12 +308,14 @@ export class TelegramTraceConsumer implements TraceConsumer {
     }
   }
 
-  private async deleteMessageIds(chatId: string, ids: number[]): Promise<void> {
+  private async deleteMessageIds(chatId: string, ids: number[], options: { logFailures?: boolean } = {}): Promise<void> {
     for (const id of ids) {
       await this.tryTelegram("deleteMessage", {
         chat_id: chatId,
         message_id: id,
-      }, {
+      }, options.logFailures ? {
+        logPrefix: `replacement message cleanup failed for chat ${chatId}`,
+      } : {
         ignoreDescriptions: [
           "message to delete not found",
           "message can't be deleted",

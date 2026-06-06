@@ -701,6 +701,56 @@ test("TelegramTraceConsumer does not use topics for direct chats", async () => {
   assert.ok(calls.every((call) => call.body.parse_mode === "HTML"));
 });
 
+test("TelegramTraceConsumer deletes replaced progress messages when edit fails", async () => {
+  const calls = [];
+  let messageId = 260;
+  const consumer = new TelegramTraceConsumer({
+    botToken: "test-token",
+    chatIds: ["8798866909"],
+    request: async (method, body) => {
+      calls.push({ method, body });
+      if (method === "sendMessage") {
+        const result = { message_id: ++messageId };
+        calls.at(-1).resultMessageId = result.message_id;
+        return result;
+      }
+      if (method === "editMessageText") throw new Error("Bad Request: message can't be edited");
+      if (method === "deleteMessage") return true;
+      throw new Error(`unexpected method ${method}`);
+    },
+  });
+  const base = { kind: "batch", timestamp: 1, runId: "run-tg" };
+
+  await consumer.consume({
+    ...base,
+    id: "m-short",
+    type: "message.record",
+    payload: {
+      role: "assistant",
+      sessionId: "sess-edit-fail",
+      sessionName: "edit-fail",
+      content: [{ type: "text", text: "Short assistant message." }],
+    },
+  });
+
+  await consumer.consume({
+    ...base,
+    id: "m-long",
+    type: "message.record",
+    payload: {
+      role: "assistant",
+      content: [{ type: "text", text: `${"Long assistant message. ".repeat(260)}` }],
+    },
+  });
+
+  const assistantSends = calls.filter((call) => call.method === "sendMessage" && String(call.body.text).startsWith("🤖 <b>Assistant"));
+  assert.equal(assistantSends.length, 3);
+  assert.deepEqual(
+    calls.filter((call) => call.method === "deleteMessage").map((call) => call.body.message_id),
+    [assistantSends[0].resultMessageId],
+  );
+});
+
 test("TelegramTraceConsumer reports session loop count from completed agent runs", async () => {
   const calls = [];
   let messageId = 275;

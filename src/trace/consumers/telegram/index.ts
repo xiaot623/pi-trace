@@ -29,6 +29,8 @@ interface ChatState {
   thinkingText: string;
   assistantText: string;
   toolLines: string[];
+  toolCardTexts: string[];
+  toolSequenceOpen: boolean;
 }
 
 interface TelegramMessageResult {
@@ -175,16 +177,26 @@ export class TelegramTraceConsumer implements TraceConsumer {
     if (role !== "assistant" || payload.toolCallId) return;
 
     const { thinking, text } = extractAssistantContent(payload.content);
-    if (thinking) {
-      await this.broadcastProgress("thinking", (state) => {
+    if (text) this.lastAssistantText = text;
+
+    for (const chatId of this.chatIds) {
+      await this.ensureTopic(chatId);
+      const state = this.getChatState(chatId);
+      if (this.usesOrderedTopicMode(chatId)) {
+        this.resetTopicToolSequence(state);
+        if (thinking) await this.sendText(chatId, "thinking", thinking);
+        if (text) await this.sendText(chatId, "assistant", text);
+        continue;
+      }
+
+      if (thinking) {
         state.thinkingText = thinking;
-      });
-    }
-    if (text) {
-      this.lastAssistantText = text;
-      await this.broadcastProgress("assistant", (state) => {
+        await this.updateProgress(chatId, "thinking", false);
+      }
+      if (text) {
         state.assistantText = text;
-      });
+        await this.updateProgress(chatId, "assistant", false);
+      }
     }
   }
 
@@ -194,12 +206,20 @@ export class TelegramTraceConsumer implements TraceConsumer {
     const status = payload.isError ? " error" : "";
     const line = oneLine(`[${toolName}${status}] ${input}`, MAX_TOOL_LINE_CHARS);
 
-    await this.broadcastProgress("tool", (state) => {
+    for (const chatId of this.chatIds) {
+      await this.ensureTopic(chatId);
+      const state = this.getChatState(chatId);
+      if (this.usesOrderedTopicMode(chatId)) {
+        await this.appendTopicToolLine(chatId, line);
+        continue;
+      }
+
       state.toolLines.push(line);
       if (state.toolLines.join("\n").length > MAX_TOOL_TEMP_CHARS) {
         state.toolLines = [line];
       }
-    });
+      await this.updateProgress(chatId, "tool", false);
+    }
   }
 
   private async handleAgentRun(payload: Record<string, unknown>): Promise<void> {
@@ -207,19 +227,25 @@ export class TelegramTraceConsumer implements TraceConsumer {
     this.totals = accumulateTotals(this.totals, (payload.stats ?? {}) as Record<string, unknown>);
     this.updateTelegramAssetMap();
     for (const chatId of this.chatIds) {
-      if (this.lastAssistantText.trim()) {
+      await this.ensureTopic(chatId);
+      if (this.lastAssistantText.trim() && !this.usesOrderedTopicMode(chatId)) {
         await this.updateProgress(chatId, "assistant", true);
       }
     }
 
     const summary = this.formatRunSummary(payload);
     for (const chatId of this.chatIds) {
-      const previousSummaryIds = [...this.getChatState(chatId).summaryMessageIds];
+      const state = this.getChatState(chatId);
+      const previousSummaryIds = [...state.summaryMessageIds];
       const summaryIds = await this.sendText(chatId, "summary", summary);
-      this.getChatState(chatId).summaryMessageIds = summaryIds;
+      state.summaryMessageIds = summaryIds;
       this.updateTelegramAssetMap();
       await this.deleteMessageIds(chatId, previousSummaryIds);
-      await this.deleteProgressMessages(chatId, ["thinking", "tool"]);
+      if (this.usesOrderedTopicMode(chatId)) {
+        this.resetTopicToolSequence(state);
+      } else {
+        await this.deleteProgressMessages(chatId, ["thinking", "tool"]);
+      }
     }
     this.resetState();
   }
@@ -279,6 +305,70 @@ export class TelegramTraceConsumer implements TraceConsumer {
       if (id) ids.push(id);
     }
     return ids;
+  }
+
+  private usesOrderedTopicMode(chatId: string): boolean {
+    const state = this.getChatState(chatId);
+    return isTopicEligibleChat(chatId) && typeof state.messageThreadId === "number";
+  }
+
+  private resetTopicToolSequence(state: ChatState): void {
+    state.toolLines = [];
+    state.toolMessageIds = [];
+    state.toolCardTexts = [];
+    state.toolSequenceOpen = false;
+  }
+
+  private async appendTopicToolLine(chatId: string, line: string): Promise<void> {
+    const state = this.getChatState(chatId);
+    if (!state.toolSequenceOpen) {
+      state.toolSequenceOpen = true;
+      state.toolMessageIds = [];
+      state.toolCardTexts = [];
+    }
+
+    const lastIndex = state.toolCardTexts.length - 1;
+    const lastText = lastIndex >= 0 ? state.toolCardTexts[lastIndex] : "";
+    const nextText = lastText ? `${lastText}\n${line}` : line;
+    if (!lastText || nextText.length > MAX_TOOL_TEMP_CHARS) {
+      const [messageId] = await this.sendText(chatId, "tool", line);
+      if (messageId) {
+        state.toolMessageIds.push(messageId);
+        state.toolCardTexts.push(line);
+      }
+      return;
+    }
+
+    const existingId = state.toolMessageIds[lastIndex];
+    const formatted = formatTelegramMessage("tool", nextText);
+    if (existingId) {
+      const edited = await this.tryTelegram("editMessageText", {
+        chat_id: chatId,
+        message_id: existingId,
+        text: formatted,
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+      }, { ignoreDescriptions: ["message is not modified"] });
+      if (edited.ok) {
+        state.toolCardTexts[lastIndex] = nextText;
+        return;
+      }
+    }
+
+    const replacementId = await this.sendMessage(chatId, formatted);
+    if (!replacementId) return;
+    if (lastIndex >= 0) state.toolCardTexts[lastIndex] = nextText;
+    if (existingId) {
+      state.toolMessageIds[lastIndex] = replacementId;
+      await this.deleteMessageIds(chatId, [existingId], { logFailures: true });
+      return;
+    }
+    if (lastIndex >= 0) {
+      state.toolMessageIds[lastIndex] = replacementId;
+      return;
+    }
+    state.toolCardTexts.push(nextText);
+    state.toolMessageIds.push(replacementId);
   }
 
   private async sendMessage(chatId: string, text: string): Promise<number | undefined> {
@@ -375,6 +465,8 @@ export class TelegramTraceConsumer implements TraceConsumer {
       thinkingText: "",
       assistantText: "",
       toolLines: [],
+      toolCardTexts: [],
+      toolSequenceOpen: false,
     };
     this.chatStates.set(chatId, created);
     return created;

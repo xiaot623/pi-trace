@@ -554,13 +554,14 @@ test("TelegramTraceConsumer creates topics, updates temporary messages, and send
     const edits = calls.filter((call) => call.method === "editMessageText");
     assert.ok(edits.some((call) => call.body.text === "🤖 <b>Assistant</b>\n\nFinal answer for the turn."));
     assert.ok(edits.every((call) => call.body.parse_mode === "HTML"));
+    assert.ok(edits.every((call) => call.body.message_thread_id === undefined));
 
     const deletes = calls.filter((call) => call.method === "deleteMessage");
-    assert.equal(deletes.length, 4, "thinking and tool messages should be deleted after run summary");
+    assert.equal(deletes.length, 2, "only non-topic chats should clean up transient thinking/tool messages");
 
     const sendMessages = calls.filter((call) => call.method === "sendMessage");
     assert.ok(sendMessages.every((call) => call.body.parse_mode === "HTML"));
-    assert.equal(sendMessages.filter((call) => !String(call.body.text).startsWith("📊 <b>Run Summary</b>")).length, 6);
+    assert.equal(sendMessages.filter((call) => !String(call.body.text).startsWith("📊 <b>Run Summary</b>")).length, 7);
     assert.ok(sendMessages.some((call) => String(call.body.text).startsWith("💭 <b>Thinking</b>")));
     assert.ok(sendMessages.some((call) => String(call.body.text).startsWith("🛠 <b>Tool Call</b>") && String(call.body.text).includes("[bash] echo ok")));
     assert.ok(sendMessages.some((call) => String(call.body.text).startsWith("🤖 <b>Assistant</b>")));
@@ -570,6 +571,10 @@ test("TelegramTraceConsumer creates topics, updates temporary messages, and send
       .filter(Boolean);
     assert.ok(deletes.every((call) => !assistantMessageIds.includes(call.body.message_id)));
 
+    const topicAssistantSends = sendMessages.filter((call) => call.body.chat_id === "-100456" && String(call.body.text).startsWith("🤖 <b>Assistant</b>"));
+    assert.equal(topicAssistantSends.length, 2);
+    assert.ok(edits.every((call) => call.body.chat_id === "123"));
+
     const runSummaries = calls.filter((call) => call.method === "sendMessage" && String(call.body.text).startsWith("📊 <b>Run Summary</b>"));
     assert.equal(runSummaries.length, 2);
     assert.match(runSummaries[0].body.text, /Tokens: 30 \| In: 10 \(cached 3\) \| Out: 20 \| Cost: \$0\.0123/);
@@ -577,8 +582,8 @@ test("TelegramTraceConsumer creates topics, updates temporary messages, and send
 
     const assetMap = JSON.parse(readFileSync(assetMapPath, "utf8"));
     assert.deepEqual(assetMap.sessions["sess-tg"].telegram.chats, [
-      { chatId: "123", topicCreated: false, summaryMessageIds: [107] },
-      { chatId: "-100456", topicName: "telegram-session 19700101", messageThreadId: 42, topicCreated: true, summaryMessageIds: [108] },
+      { chatId: "123", topicCreated: false, summaryMessageIds: [108] },
+      { chatId: "-100456", topicName: "telegram-session 19700101", messageThreadId: 42, topicCreated: true, summaryMessageIds: [109] },
     ]);
     assert.deepEqual(assetMap.sessions["sess-tg"].telegram.totals, {
       loops: 1,
@@ -699,6 +704,107 @@ test("TelegramTraceConsumer does not use topics for direct chats", async () => {
   assert.ok(calls.every((call) => !["createForumTopic", "closeForumTopic", "reopenForumTopic"].includes(call.method)));
   assert.ok(calls.every((call) => call.body.message_thread_id === undefined));
   assert.ok(calls.every((call) => call.body.parse_mode === "HTML"));
+});
+
+test("TelegramTraceConsumer sends ordered topic tool cards and resets after assistant messages", async () => {
+  const calls = [];
+  let messageId = 320;
+
+  try {
+    overrides.telegramThreadId = "88";
+    const consumer = new TelegramTraceConsumer({
+      botToken: "test-token",
+      chatIds: ["-100456"],
+      request: async (method, body) => {
+        calls.push({ method, body });
+        if (method === "sendMessage") return { message_id: ++messageId };
+        if (method === "editMessageText") return true;
+        throw new Error(`unexpected method ${method}`);
+      },
+    });
+    const base = { kind: "batch", timestamp: 1, runId: "run-tg" };
+
+    await consumer.consume({
+      ...base,
+      id: "tool-1",
+      type: "tool.record",
+      payload: { toolName: "bash", input: { command: "echo 1" }, isError: false },
+    });
+
+    await consumer.consume({
+      ...base,
+      id: "tool-2",
+      type: "tool.record",
+      payload: { toolName: "bash", input: { command: "echo 2" }, isError: false },
+    });
+
+    await consumer.consume({
+      ...base,
+      id: "msg-1",
+      type: "message.record",
+      payload: {
+        role: "assistant",
+        sessionId: "sess-topic-tool-reset",
+        sessionName: "topic-reset",
+        content: [{ type: "text", text: "Assistant update." }],
+      },
+    });
+
+    await consumer.consume({
+      ...base,
+      id: "tool-3",
+      type: "tool.record",
+      payload: { toolName: "bash", input: { command: "echo 3" }, isError: false },
+    });
+
+    const toolSends = calls.filter((call) => call.method === "sendMessage" && String(call.body.text).startsWith("🛠 <b>Tool Call</b>"));
+    const toolEdits = calls.filter((call) => call.method === "editMessageText" && String(call.body.text).startsWith("🛠 <b>Tool Call</b>"));
+    assert.equal(toolSends.length, 2);
+    assert.equal(toolEdits.length, 1);
+    assert.ok(toolEdits[0].body.text.includes("[bash] echo 1\n[bash] echo 2"));
+    assert.ok(toolSends.every((call) => call.body.message_thread_id === 88));
+    assert.equal(calls.filter((call) => call.method === "deleteMessage").length, 0);
+  } finally {
+    delete overrides.telegramThreadId;
+  }
+});
+
+test("TelegramTraceConsumer rolls topic tool cards when the current card is full", async () => {
+  const calls = [];
+  let messageId = 340;
+
+  try {
+    overrides.telegramThreadId = "88";
+    const consumer = new TelegramTraceConsumer({
+      botToken: "test-token",
+      chatIds: ["-100456"],
+      request: async (method, body) => {
+        calls.push({ method, body });
+        if (method === "sendMessage") return { message_id: ++messageId };
+        if (method === "editMessageText") return true;
+        throw new Error(`unexpected method ${method}`);
+      },
+    });
+    const base = { kind: "batch", timestamp: 1, runId: "run-tg" };
+    const longCommand = `echo ${"x".repeat(400)}`;
+
+    for (let i = 0; i < 18; i += 1) {
+      await consumer.consume({
+        ...base,
+        id: `tool-roll-${i}`,
+        type: "tool.record",
+        payload: { toolName: "bash", input: { command: longCommand }, isError: false },
+      });
+    }
+
+    const toolSends = calls.filter((call) => call.method === "sendMessage" && String(call.body.text).startsWith("🛠 <b>Tool Call</b>"));
+    const toolEdits = calls.filter((call) => call.method === "editMessageText" && String(call.body.text).startsWith("🛠 <b>Tool Call</b>"));
+    assert.ok(toolSends.length >= 2);
+    assert.ok(toolEdits.length >= 1);
+    assert.equal(calls.filter((call) => call.method === "deleteMessage").length, 0);
+  } finally {
+    delete overrides.telegramThreadId;
+  }
 });
 
 test("TelegramTraceConsumer deletes replaced progress messages when edit fails", async () => {

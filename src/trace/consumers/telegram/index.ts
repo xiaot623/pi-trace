@@ -899,6 +899,7 @@ function formatUsageLine(stats: Partial<TelegramTotals>): string | undefined {
   const inputTokens = stats.inputTokens;
   const outputTokens = stats.outputTokens;
   const cacheReadTokens = stats.cacheReadTokens;
+  const cacheWriteTokens = stats.cacheWriteTokens;
   const cost = stats.cost;
 
   if (totalTokens !== undefined && totalTokens > 0) parts.push(`Tokens: ${totalTokens}`);
@@ -908,6 +909,13 @@ function formatUsageLine(stats: Partial<TelegramTotals>): string | undefined {
     parts.push(input);
   }
   if (outputTokens !== undefined && outputTokens > 0) parts.push(`Out: ${outputTokens}`);
+
+  // Cache hit rate: cacheRead / (input + cacheRead + cacheWrite) × 100
+  const denom = (inputTokens ?? 0) + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0);
+  if (denom > 0 && (cacheReadTokens ?? 0) > 0) {
+    parts.push(`CH: ${((cacheReadTokens! / denom) * 100).toFixed(1)}%`);
+  }
+
   if (cost !== undefined && cost > 0) parts.push(`Cost: $${cost.toFixed(4)}`);
 
   return parts.length > 0 ? parts.join(" | ") : undefined;

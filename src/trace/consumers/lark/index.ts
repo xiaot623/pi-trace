@@ -192,6 +192,7 @@ export class LarkTraceConsumer implements TraceConsumer {
     const inputTokens = stats.inputTokens;
     const outputTokens = stats.outputTokens;
     const cacheReadTokens = stats.cacheReadTokens;
+    const cacheWriteTokens = stats.cacheWriteTokens;
     const totalTokens = stats.totalTokens;
     const cost = stats.cost;
 
@@ -208,6 +209,13 @@ export class LarkTraceConsumer implements TraceConsumer {
     if (typeof outputTokens === "number") {
       parts.push(`Out: ${outputTokens}`);
     }
+
+    // Cache hit rate: cacheRead / (input + cacheRead + cacheWrite) × 100
+    const denom = (asNum(inputTokens) + asNum(cacheReadTokens) + asNum(cacheWriteTokens));
+    if (denom > 0 && asNum(cacheReadTokens) > 0) {
+      parts.push(`CH: ${(asNum(cacheReadTokens) / denom * 100).toFixed(1)}%`);
+    }
+
     if (typeof cost === "number" && cost > 0) {
       parts.push(`Cost: $${cost.toFixed(4)}`);
     }
@@ -432,6 +440,11 @@ export class LarkTraceConsumer implements TraceConsumer {
 // ============================================================================
 // XML utility functions
 // ============================================================================
+
+/** Coerce unknown to number, returning 0 for non-number values. */
+function asNum(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
 
 /** Escape text for safe embedding inside Lark XML. */
 function escapeXml(text: string): string {

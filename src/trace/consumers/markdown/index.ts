@@ -183,6 +183,7 @@ export class MarkdownTraceConsumer implements TraceConsumer {
     const inputTokens = stats.inputTokens;
     const outputTokens = stats.outputTokens;
     const cacheReadTokens = stats.cacheReadTokens;
+    const cacheWriteTokens = stats.cacheWriteTokens;
     const totalTokens = stats.totalTokens;
     const cost = stats.cost;
 
@@ -199,6 +200,13 @@ export class MarkdownTraceConsumer implements TraceConsumer {
     if (typeof outputTokens === "number") {
       parts.push(`**Out:** ${outputTokens}`);
     }
+
+    // Cache hit rate: cacheRead / (input + cacheRead + cacheWrite) × 100
+    const denom = (num(inputTokens) + num(cacheReadTokens) + num(cacheWriteTokens));
+    if (denom > 0 && num(cacheReadTokens) > 0) {
+      parts.push(`**CH:** ${(num(cacheReadTokens) / denom * 100).toFixed(1)}%`);
+    }
+
     if (typeof cost === "number" && cost > 0) {
       parts.push(`**Cost:** $${cost.toFixed(4)}`);
     }
@@ -247,6 +255,11 @@ function renderContentAsMarkdown(content: unknown): string {
   });
 
   return parts.filter(Boolean).join("\n\n");
+}
+
+/** Coerce unknown to number, returning 0 for non-number values. */
+function num(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 function fencedJson(value: unknown): string {

@@ -35,7 +35,7 @@ export function resolveConfig(options: ResolveConfigOptions = {}): TraceConfig {
   return {
     assetDir,
     assetMapPath: join(dirname(configPath), ASSET_MAP_FILE_NAME),
-    logDir: env === "production" ? join(dirname(configPath), "pi-trace", "logs") : join(dirname(configPath), "logs"),
+    logDir: env === "production" ? join(dirname(configPath), "logs") : join(dirname(configPath), "logs"),
     console: {
       enabled: merged.console.enabled,
       filter: merged.console.filter,
@@ -70,7 +70,7 @@ function detectEnv(): "development" | "production" {
 
 function getConfigPath(env: string, assetDir: string): string {
   if (env === "production") {
-    return process.env.PI_TRACE_CONFIG ?? join(homedir(), ".config", "pi-trace", CONFIG_FILE_NAME);
+    return process.env.PI_TRACE_CONFIG ?? join(homedir(), ".mypi", "pitr", CONFIG_FILE_NAME);
   }
   return join(assetDir, CONFIG_FILE_NAME);
 }
